@@ -27,7 +27,48 @@ EfficientNet classifier with confidence → per-class counts → annotated image
   only that split's crops.
 - **Detector mAP is measured on synthetic frames.** It shows how well the detector finds pasted
   organisms. It is not a measure of performance on real full-field microscopy images.
-- Class subset and merge mapping: *TBD (Phase 2)*.
+
+### Classes (Phase 2)
+
+Integrity check: 17,943 images in 35 raw classes, 0 unreadable. Of the 25 mapped raw classes,
+14,048 images go into 8 project classes. Five byte-identical files are removed before the split:
+two images filed under two conflicting classes (both copies dropped, 4 rows) and one repeated
+image (1 row). That leaves **14,043 images**.
+
+| Class | Raw ZooLake classes | Images |
+|---|---|---|
+| dinobryon | dinobryon | 3,319 |
+| rotifer | asplanchna, brachionus, conochilus, kellicottia, keratella_cochlearis, keratella_quadrata, polyarthra, rotifers, synchaeta, trichocerca | 3,278 |
+| cladoceran | daphnia, diaphanosoma, bosmina | 1,890 |
+| nauplius | nauplius | 1,507 |
+| copepod | cyclops, eudiaptomus | 1,403 |
+| diatom | asterionella, fragilaria, diatom_chain | 1,377 |
+| ceratium | ceratium | 814 |
+| **reject** | dirt, unknown, copepod_skins, daphnia_skins | 455 |
+
+- **`reject`** means *not countable as a target organism*: debris (`dirt`), moulted exoskeletons
+  (`*_skins`), and objects the taxonomists could not place (`unknown`). Per the dataset README,
+  `unknown` may include fragments of zooplankton or algae, so `reject` is **not** a clean
+  "non-organism" class.
+- **Open set (3,895 images, never trained on or used for tuning):** maybe_cyano, unknown_plankton,
+  uroglena, paradileptus, filament, aphanizomenon, fish, leptodora, hydra, chaoborus. It measures
+  how the system behaves on organisms it was never taught.
+- Imbalance ratio: 332 : 1 across raw classes, 7.3 : 1 after mapping. See
+  `results/class_imbalance.png` and `results/split_report.md`.
+
+### Split (leakage-safe)
+
+- 70/15/15 over **whole calendar days**: no day's images are split across train/val/test. Stratified
+  jointly on project class **and** raw subtype, seed 42. A class may fall back to hour blocks only if
+  its val/test cannot be filled and hour blocks actually help.
+- Leakage check: pHash candidates (Hamming distance ≤ 4), then confirmation by pixel correlation
+  (≥ 0.98). Result: 0 confirmed near-duplicates across splits. pHash alone is unreliable on these
+  small dark-field crops: it flagged about 4,600 candidate pairs, mostly different-class images
+  months apart.
+- **Diatom caveat:** 64% of diatom images come from one bloom day (2019-06-02, asterionella), which
+  must go to train. Diatom test has only 64 images from 9 days, mostly *fragilaria*. Diatom test
+  F1 is therefore a weaker estimate than for the other classes.
+- The test split is not looked at until the final evaluation (Phase 8).
 
 ## Project layout
 

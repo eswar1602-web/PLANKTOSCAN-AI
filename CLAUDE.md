@@ -17,7 +17,16 @@ local RTX 3050 Laptop (4 GB): mixed precision, small batches. A Colab notebook i
   the user before downloading. Never invent URLs. Ask before any download over 1 GB.
 - Print the full raw class list with counts first, then propose a merge mapping into
   copepod / diatom / nauplius + 2-5 other classes. The user approves it before it goes into config.yaml.
-- Split 70/15/15, leakage-safe (group near-duplicates), fixed seed.
+- APPROVED mapping (config.yaml `class_mapping`): 7 organisms (copepod, diatom, nauplius,
+  cladoceran, rotifer, ceratium, dinobryon) + `reject` (dirt, unknown, copepod/daphnia skins; may
+  contain organism fragments, describe it honestly). 14,048 mapped images; 14,043 after removing
+  byte-identical duplicates or label conflicts.
+- Open set: 10 excluded raw classes (3,895 images). NEVER train on them or tune on them.
+  Uncertainty thresholds are chosen on the VAL split only.
+- Split: whole-day blocks, stratified on target + raw subtype, 70/15/15, seed 42; hour fallback
+  only if it helps (log which classes). pHash candidates + pixel-correlation confirmation.
+- TEST SPLIT IS UNTOUCHED until Phase 8: no metrics, no viewing predictions, no tuning on it.
+- Diatom is bloom-dominated (64% on one day): its test estimate is weak; say so in the results.
 - ZooLake is crops only, so the detector uses SYNTHETIC frames:
   - each split's frames use ONLY that split's crops (train/val/test)
   - alpha-mask blending (no hard seams), random position/scale/rotation, some overlap, noise, uneven illumination

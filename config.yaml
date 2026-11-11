@@ -31,18 +31,38 @@ data:
     expected_images: 17943
     expected_classes: 35
   max_download_gb_without_asking: 1.0
-  # Raw ZooLake class -> project class. Proposed in Phase 2, approved by the user.
-  # Raw classes not listed here are excluded.
-  class_mapping: {}
-  # Final project classes (5-8). Must include copepod, diatom, nauplius.
-  classes: []
+  # Project class -> raw ZooLake classes (approved by the user in Phase 2).
+  # 7 organism classes + "reject" = 8 classes, 14,048 images.
+  class_mapping:
+    copepod: [cyclops, eudiaptomus]
+    diatom: [asterionella, fragilaria, diatom_chain]
+    nauplius: [nauplius]
+    cladoceran: [daphnia, diaphanosoma, bosmina]
+    rotifer: [asplanchna, brachionus, conochilus, kellicottia, keratella_cochlearis,
+              keratella_quadrata, polyarthra, rotifers, synchaeta, trichocerca]
+    ceratium: [ceratium]
+    dinobryon: [dinobryon]
+    # Not countable as a target organism: debris, moulted exoskeletons, and "unknown"
+    # objects, which per the dataset README may include fragments of zooplankton/algae.
+    reject: [dirt, unknown, copepod_skins, daphnia_skins]
+  reject_class: reject
+  # Open-set evaluation only (3,895 images). NEVER used for training or threshold tuning.
+  open_set: [maybe_cyano, unknown_plankton, uroglena, paradileptus, filament,
+             aphanizomenon, fish, leptodora, hydra, chaoborus]
   split:
     train: 0.70
     val: 0.15
     test: 0.15
-    group_near_duplicates: true      # keep perceptual-hash near-duplicates in one split
-    phash_max_distance: 4
-  min_images_per_class: 50           # warn below this in the imbalance report
+    block: day                       # whole-day blocks, class-stratified
+    stratify_on: [target, raw_class] # balance project classes AND raw subtypes jointly
+    drop_duplicate_files: true       # byte-identical files: dedupe; drop both if labels conflict
+    fallback_block: hour             # only for a class whose val/test cannot be filled
+    fallback_min_fill: 0.5           # val/test < 50% of its target share -> fallback
+    min_test_images_warn: 30
+  leakage:
+    phash_max_distance: 4            # stage 1: candidate pairs (Hamming distance, 64-bit pHash)
+    confirm_pixel_corr: 0.98         # stage 2: candidate is a near-duplicate if 64x64 gray corr >= this
+    small_image_px: 32               # pHash unreliable below this (min side), reported separately
 
 preprocess:
   clahe:
