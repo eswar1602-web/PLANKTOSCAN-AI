@@ -10,13 +10,20 @@ __pycache__/
 # Environments
 .venv/
 venv/
+
+# Secrets / credentials (never commit)
 .env
+.env.*
+*.key
+*.pem
+secrets.*
+kaggle.json
+.streamlit/secrets.toml
+credentials*.json
 
 # Data, models and generated outputs (large / reproducible from scripts)
-data/raw/
-data/interim/
-data/processed/
-data/synthetic/
+data/*
+!data/.gitkeep
 models/
 runs/
 results/*

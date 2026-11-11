@@ -29,3 +29,21 @@ def test_seed_is_reproducible() -> None:
     set_seed(123)
     b = (random.random(), np.random.rand(3).tolist())
     assert a == b
+
+
+def test_torch_seed_is_reproducible() -> None:
+    """Exercises the torch branch of set_seed (skipped only if torch is missing)."""
+    torch = pytest.importorskip("torch")
+    set_seed(7, deterministic=True)
+    a = torch.rand(4)
+    set_seed(7, deterministic=True)
+    b = torch.rand(4)
+    assert torch.equal(a, b)
+    assert torch.backends.cudnn.deterministic is True
+    assert torch.backends.cudnn.benchmark is False
+    if torch.cuda.is_available():
+        set_seed(7)
+        c = torch.rand(4, device="cuda")
+        set_seed(7)
+        d = torch.rand(4, device="cuda")
+        assert torch.equal(c, d)
