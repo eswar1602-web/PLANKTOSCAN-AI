@@ -18,10 +18,18 @@ paths:                        # relative to the project root
 
 data:
   dataset: zoolake
-  # Filled in Phase 2 ONLY after the URL is verified from the ZooLake paper's
-  # data-availability section and its size has been shown to the user.
-  source_url: null
-  source_doi: null
+  # Verified via the Eawag Open Data API (record linked from the paper's data statement).
+  # Only data.zip is used; the 4.8 GB model zip and the code zip are NOT downloaded.
+  zoolake:
+    doi: 10.25678/0004DY
+    paper_doi: 10.3389/fmicb.2021.746297
+    url: https://opendata.eawag.ch/dataset/52b6ba86-5ecb-448c-8c01-eec7cb209dc7/resource/1cc785fa-36c2-447d-bb11-92ce1d1f3f2d/download/data.zip
+    filename: data.zip
+    size_bytes: 492466237
+    sha256: ce038e19af73dd5aff0beb9ed0dc012bb0314efeb341337667b62d1e1c383d4f
+    images_subdir: data/zooplankton_0p5x         # one folder per raw class
+    expected_images: 17943
+    expected_classes: 35
   max_download_gb_without_asking: 1.0
   # Raw ZooLake class -> project class. Proposed in Phase 2, approved by the user.
   # Raw classes not listed here are excluded.

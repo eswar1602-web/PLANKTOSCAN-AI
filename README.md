@@ -10,6 +10,14 @@ EfficientNet classifier with confidence → per-class counts → annotated image
 
 ## Data and important limitations
 
+- **Source and license.** ZooLake, Eawag, DOI [10.25678/0004DY](https://doi.org/10.25678/0004DY), from
+  Kyathanahally et al. (2021), *Deep Learning Classification of Lake Zooplankton*, Frontiers in
+  Microbiology 12:746297, [doi:10.3389/fmicb.2021.746297](https://doi.org/10.3389/fmicb.2021.746297).
+  Only `data.zip` (492 MB, SHA-256 `ce038e19…1c383d4f`, checked on download) is used.
+  **The license is unclear:** the record's license field is empty, but it is marked as open data and the
+  paper calls the data "freely available". We use it for non-commercial academic work and cite the
+  DOI and the paper. The images are not redistributed in this repo; `python -m scripts.download_zoolake`
+  downloads them from the source.
 - **Dataset: ZooLake.** It is a **freshwater** (lake) plankton dataset, not marine. SIH25043 is framed
   around marine plankton, so species and imaging conditions will differ from marine samples. A
   model trained here should be retrained or fine-tuned on marine data before real marine use.
