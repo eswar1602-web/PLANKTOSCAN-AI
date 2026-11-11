@@ -28,8 +28,8 @@ def _load_timestamps(class_dir: Path) -> dict[str, str]:
     tsv = class_dir / "features.tsv"
     if not tsv.exists():
         return {}
-    df = pd.read_csv(tsv, sep="\t", usecols=[0, 1])
-    df.columns = ["url", "timestamp"]
+    # Select by name: column order differs between classes (e.g. brachionus starts with 'area').
+    df = pd.read_csv(tsv, sep="\t", usecols=["url", "timestamp"])
     names = df["url"].astype(str).map(lambda u: Path(u.replace("\\", "/")).name)
     return dict(zip(names, df["timestamp"].astype(str)))
 
