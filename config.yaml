@@ -1,0 +1,101 @@
+# PlanktoScan AI - single source of truth for paths, classes and hyperparameters.
+# Every training/eval run copies the resolved version of this file into runs/<id>/.
+
+project:
+  name: planktoscan-ai
+  seed: 42                    # fixed seed for python/numpy/torch
+  deterministic: true         # cudnn deterministic mode (slightly slower)
+  device: auto                # auto | cuda | cpu  (GPU-optional)
+
+paths:                        # relative to the project root
+  raw_data: data/raw
+  interim_data: data/interim
+  processed_data: data/processed     # leakage-safe split crops (train/val/test)
+  synthetic_data: data/synthetic     # generated YOLO frames, per split
+  models: models
+  runs: runs
+  results: results
+
+data:
+  dataset: zoolake
+  # Filled in Phase 2 ONLY after the URL is verified from the ZooLake paper's
+  # data-availability section and its size has been shown to the user.
+  source_url: null
+  source_doi: null
+  max_download_gb_without_asking: 1.0
+  # Raw ZooLake class -> project class. Proposed in Phase 2, approved by the user.
+  # Raw classes not listed here are excluded.
+  class_mapping: {}
+  # Final project classes (5-8). Must include copepod, diatom, nauplius.
+  classes: []
+  split:
+    train: 0.70
+    val: 0.15
+    test: 0.15
+    group_near_duplicates: true      # keep perceptual-hash near-duplicates in one split
+    phash_max_distance: 4
+  min_images_per_class: 50           # warn below this in the imbalance report
+
+preprocess:
+  clahe:
+    enabled: true
+    clip_limit: 2.0
+    tile_grid_size: [8, 8]
+  denoise:
+    enabled: true
+    method: nl_means                 # nl_means | bilateral | gaussian
+    h: 7
+  flat_field:
+    enabled: true
+    method: gaussian_background      # estimate illumination by large blur, then divide
+    sigma: 51
+
+classifier:
+  backbone: efficientnet_b0          # timm name; scale to efficientnet_b2 later
+  pretrained: true
+  image_size: 224
+  batch_size: 32                     # fits 4 GB RTX 3050 with AMP
+  epochs: 25
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  label_smoothing: 0.0
+  class_weighting: inverse_sqrt_freq # none | inverse_freq | inverse_sqrt_freq
+  amp: true                          # mixed precision on CUDA
+  num_workers: 2                     # keep low on Windows
+  early_stopping_patience: 5
+  selection_metric: macro_f1         # best checkpoint chosen by val macro F1
+
+synthetic:
+  image_size: 640
+  frames: {train: 2000, val: 300, test: 300}  # each split uses ONLY its own crops
+  organisms_per_frame: [3, 15]
+  scale_range: [0.5, 1.5]
+  rotation_deg: 180
+  max_overlap_iou: 0.3
+  alpha_blend: true                  # soft alpha masks, no hard paste seams
+  mask_feather_px: 3
+  background:
+    type: procedural                 # procedural microscopy-style backgrounds
+    illumination_gradient: [0.6, 1.0]
+    gaussian_noise_std: [0.0, 8.0]
+    blur_sigma: [0.0, 1.2]
+  single_class_detector: true        # detector finds "organism"; classifier names it
+
+detector:
+  model: yolov8n.pt                  # scale to yolov8s.pt later
+  image_size: 640
+  batch_size: 8                      # 4 GB VRAM
+  epochs: 50
+  patience: 15
+  amp: true
+  workers: 2
+  conf_threshold: 0.25
+  iou_threshold: 0.6                 # NMS IoU; tuned in Phase 5 for overlapping organisms
+
+pipeline:
+  classifier_conf_threshold: 0.6     # below this -> label "uncertain" (kept, not dropped)
+  min_box_area_px: 100
+  crop_padding: 0.1
+
+report:
+  formats: [csv, html, pdf]

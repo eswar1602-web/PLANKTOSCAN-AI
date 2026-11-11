@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Data, models and generated outputs (large / reproducible from scripts)
+data/raw/
+data/interim/
+data/processed/
+data/synthetic/
+models/
+runs/
+results/*
+!results/.gitkeep
+*.pt
+*.pth
+*.onnx
+*.zip
+*.tar
+*.tar.gz
+
+# Ultralytics default output folder
+yolov8*.pt
+ultralytics_runs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
