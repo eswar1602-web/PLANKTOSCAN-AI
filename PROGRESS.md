@@ -123,3 +123,18 @@ file or console line), and problems hit. Final numbers live in `results/` and ar
   frame crops 76.0% / 49.3% (padding 0.1). The cause is the crop-vs-pasted-frame domain gap in the
   classifier, not the detector. Not fixed: that would need a new model evaluated on fresh test data.
 - Open set: 71.9% uncertain, 18.2% reject, 9.9% wrongly an organism class (13.1% excluding maybe_cyano).
+
+## Extras after Phase 8 (2026-11-12): no test data, no retraining
+- `scripts/eval_real.py` + `src/pipeline/real_eval.py`: real-image pilot vs manual counts (total-only or
+  per-class). Every output is tagged "real pilot, not used for tuning", and results/real_pilot/ is git-ignored.
+  Smoke-tested on 5 synthetic VAL frames with made-up counts (scratchpad only); no real images available,
+  so no real numbers.
+- `scripts/benchmark_cpu.py` + `src/deploy/onnx_runtime.py`: ONNX export (torch TorchScript exporter; the
+  onnx-script insertion step is skipped because `onnx` is not installed and the models have no custom functions)
+  and CPU-only inference with OpenCV DNN 5.0.0 (onnxruntime not installed).
+  - Parity: classifier max logit diff 1.5e-5, argmax 100%; detector 139/139 boxes matched at IoU 0.9.
+  - Ryzen 7 7435HS, median of 100 VAL inputs, 16 threads / 1 thread: detector 52.9 / 236.6 ms per frame;
+    classifier forward 5.2 / 16.4 ms per crop (12.0 / 23.2 ms with preprocessing); full pipeline
+    177.6 / 464.0 ms per frame (8.5 detections on average).
+  - Sizes: classifier 16.35 MB .pt / 16.05 MB ONNX; detector 6.51 MB .pt (fp16) / 12.63 MB ONNX (fp32).
+- Tests: +14 (tests/test_real_eval.py, tests/test_onnx.py); pytest 69 passed.

@@ -1,0 +1,54 @@
+{
+  "note": "CPU only (GPU hidden), ONNX models, inputs from SYNTHETIC VAL frames/crops; median over runs",
+  "cpu": "AMD Ryzen 7 7435HS",
+  "logical_cpus": 16,
+  "runtime": "OpenCV DNN 5.0.0 (CPU)",
+  "torch": "2.14.1+cu126",
+  "runs": 100,
+  "crop_runs": 100,
+  "frame_size": [
+    640,
+    640
+  ],
+  "detector_input": 640,
+  "classifier_input": 128,
+  "mean_detections_per_frame": 8.54,
+  "sizes_mb": {
+    "classifier_pt": 16.35,
+    "classifier_onnx": 16.05,
+    "detector_pt": 6.51,
+    "detector_onnx": 12.63
+  },
+  "params_m": {
+    "classifier": 4.02,
+    "detector": 3.14
+  },
+  "parity": {
+    "classifier_max_abs_logit_diff": 1.5139579772949219e-05,
+    "classifier_argmax_agreement": 1.0,
+    "detector_boxes_ultralytics": 139,
+    "detector_boxes_onnx": 139,
+    "detector_match_rate_iou_0.9": 1.0
+  },
+  "latency_ms": {
+    "all_threads": {
+      "threads": 16,
+      "detector_per_frame_ms": 52.895600034389645,
+      "classifier_per_crop_forward_ms": 5.198949947953224,
+      "crop_preprocess_only_ms": 5.652599968016148,
+      "classifier_per_crop_with_preprocess_ms": 11.960799980442971,
+      "full_pipeline_per_frame_ms": 177.58020001929253,
+      "pytorch_classifier_per_crop_forward_ms": 26.037400006316602
+    },
+    "1_thread": {
+      "threads": 1,
+      "detector_per_frame_ms": 236.60890001337975,
+      "classifier_per_crop_forward_ms": 16.41265000216663,
+      "crop_preprocess_only_ms": 5.752050026785582,
+      "classifier_per_crop_with_preprocess_ms": 23.165600025095046,
+      "full_pipeline_per_frame_ms": 463.95465009845793,
+      "pytorch_classifier_per_crop_forward_ms": 21.896200021728873
+    }
+  },
+  "run": "20261112_131506_benchmark_cpu"
+}

@@ -74,3 +74,14 @@ One line per decision. Added to as each phase is built.
 - **End-to-end count error per class on synthetic test frames:** counting is the actual product output, so it is evaluated directly, not only through mAP and F1.
 - **Frame-crop diagnostic on VAL with ground-truth boxes:** it separates detector errors from classifier domain shift; it showed the end-to-end uncertainty comes from the classifier, not the detector.
 - **No fix after seeing test:** retraining on frame crops after the test evaluation would turn the test set into a tuning set; it is listed as future work.
+
+## After the final evaluation: real pilot and embedded feasibility
+- **Real-image pilot is a separate script, tagged on every output and never used for tuning:** it can only report how the frozen system transfers; using it to pick thresholds would leak the only real-data check.
+- **Two predicted totals (with and without uncertain items):** an uncertain item is usually an organism the classifier is unsure about, so the truth is likely between the two; showing both keeps the uncertainty visible.
+- **Works with total counts only:** manual per-class counts are expensive, and a total count by an expert is the realistic minimum.
+- **Real pilot outputs are git-ignored:** real images may not be ours to publish.
+- **ONNX + OpenCV DNN on CPU with the GPU hidden:** ONNX is the portable format for edge runtimes; OpenCV DNN was already installed, and no new downloads were allowed.
+- **Exporter step skipped instead of installing `onnx`:** torch only needs `onnx` to insert custom onnx-script functions, which these models do not have; parity tests (logit difference, box matching) prove the exported models are equivalent.
+- **YOLO decoded and NMS'd in NumPy/OpenCV:** the edge device should not need PyTorch or Ultralytics; parity is checked against Ultralytics boxes at IoU >= 0.9.
+- **Median over 100 different VAL inputs after warm-up, at all threads and at 1 thread:** the median resists OS jitter; 1 thread approximates a small CPU without claiming to be one.
+- **Classifier timed per crop at batch 1, with and without preprocessing:** that is how a small device would run it, and it shows the handcrafted preprocessing is not free: about as costly as the network forward with all threads, about a third of it on one thread.
