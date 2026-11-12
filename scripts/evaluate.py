@@ -201,7 +201,12 @@ def main() -> None:
         "uncertain fraction": [val["uncertain_fraction"], test["uncertain_fraction"]],
         "accuracy of accepted": [val["accepted_accuracy"], test["accepted_accuracy"]],
     }, index=pd.Index(["val", "test"], name="split")).round(4)
-    abl_show = abl[["experiment", "preprocess", "class_weighting", "epochs_budget", "best_epoch",
+    cls_init = "ImageNet-pretrained" if meta.get("pretrained") else "from scratch"
+    det_run = (resolve_path(cfg, "models") / "detector_run.txt").read_text().strip()
+    abl_det = pd.read_csv(out / "ablation_detector.csv")
+    det_init = abl_det.set_index("run").loc[det_run, "init"]
+    det_init = "COCO-pretrained" if det_init.startswith("COCO") else "from scratch"
+    abl_show = abl[["experiment", "init", "grayscale", "preprocess", "class_weighting", "epochs_budget", "best_epoch",
                     "val_accuracy", "val_macro_f1", "val_macro_f1_organisms"]].round(4)
     mac_ci = S["ci"].loc["MACRO (8 classes)"]
 
@@ -214,10 +219,15 @@ def main() -> None:
         "",
         f"Imbalance ratio (largest : smallest class): {imb['total_images'].max() / imb['total_images'].min():.1f} : 1.",
         "",
-        "### Classifier ablations (VAL only, single seed, EfficientNet-B0 from scratch)",
+        "### Classifier ablations (VAL only, single seed, EfficientNet-B0)",
         md(abl_show, index=False),
         "",
-        f"Final classifier: `{meta['run']}` (preprocessing: {meta['use_preprocess']}, class weighting: "
+        "### Detector ablation: from scratch vs COCO-pretrained (SYNTHETIC VAL frames, Ultralytics default NMS IoU 0.7)",
+        md(abl_det.drop(columns=["run"]).round(4), index=False),
+        "",
+        "The from-scratch detector run was stopped by the user after 7 epochs; compare at the common epoch as well as at best.",
+        "",
+        f"Final classifier: `{meta['run']}` ({cls_init}, grayscale: {meta.get('grayscale', False)}, preprocessing: {meta['use_preprocess']}, class weighting: "
         f"{meta['class_weighting']}, best epoch {meta['epoch']}).",
         "",
         "### Classifier: overall",
@@ -244,7 +254,7 @@ def main() -> None:
         "",
         md(tab),
         "",
-        "### Detector (measured on SYNTHETIC frames only)",
+        f"### Detector (YOLOv8n, {det_init}, run `{det_run}`; measured on SYNTHETIC frames only)",
         md(dmet.round(4)),
         "",
         f"Tuned on synthetic VAL frames: NMS IoU {th['nms_iou']}, confidence {th['det_conf']:.2f}.",
@@ -261,6 +271,12 @@ def main() -> None:
         "",
         md(errs.round(3)),
     ]
+    diag_path = out / "frame_crop_diagnostic.csv"
+    if diag_path.exists():
+        lines += ["", "### Diagnostic: why so many frame detections are uncertain (SYNTHETIC VAL frames, ground-truth boxes)",
+                  "Same objects, classified as crops re-cut from the synthetic frames vs as their original ZooLake crops "
+                  "(`python -m scripts.diagnose_frame_crops`, VAL only):", "",
+                  md(pd.read_csv(diag_path).round(4), index=False)]
     table_md = "\n".join(lines) + "\n"
     (out / "results_tables.md").write_text(table_md, encoding="utf-8")
     (run_dir / "results_tables.md").write_text(table_md, encoding="utf-8")
@@ -280,13 +296,13 @@ def main() -> None:
         "",
         "## Headline numbers",
         "",
-        f"- Classifier (EfficientNet-B0, from scratch), TEST: accuracy {F(test['accuracy'])}, "
+        f"- Classifier (EfficientNet-B0, {cls_init}), TEST: accuracy {F(test['accuracy'])}, "
         f"macro F1 (8 classes) {F(test['macro_f1'])} [95% CI {mac_ci['ci_low']:.3f}-{mac_ci['ci_high']:.3f}], "
         f"macro F1 (7 organisms) {F(test['macro_f1_organisms'])}.",
         f"- Same classifier on VAL: accuracy {F(val['accuracy'])}, macro F1 {F(val['macro_f1'])}.",
         f"- Uncertainty threshold {unc_t:.2f} (VAL): test uncertain fraction {F(test['uncertain_fraction'], 3)}, "
         f"accuracy of accepted {F(test['accepted_accuracy'])}.",
-        f"- Detector (YOLOv8n, from scratch) on SYNTHETIC test frames: mAP@0.5 "
+        f"- Detector (YOLOv8n, {det_init}) on SYNTHETIC test frames: mAP@0.5 "
         f"{F(dmet.loc['synthetic test', 'mAP@0.5'])}, mAP@0.5:0.95 {F(dmet.loc['synthetic test', 'mAP@0.5:0.95'])}.",
         f"- End-to-end on SYNTHETIC test frames: total organism count MAE {F(errs.loc['ALL organisms', 'MAE'], 2)} "
         f"per frame (mean true {F(errs.loc['ALL organisms', 'mean_true_per_frame'], 2)}), mean signed error "

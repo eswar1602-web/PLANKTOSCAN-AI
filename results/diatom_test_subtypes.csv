@@ -1,0 +1,4 @@
+raw_class,test_images,recall_as_diatom
+asterionella,8.0,1.0
+diatom_chain,2.0,0.0
+fragilaria,54.0,1.0

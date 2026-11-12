@@ -1,0 +1,12 @@
+{
+  "frames": 300,
+  "gt_objects": 2745,
+  "detections": 2679,
+  "det_precision": 0.9570735349010825,
+  "det_recall": 0.9340619307832423,
+  "det_f1": 0.9454277286135694,
+  "uncertain_per_frame": 4.496666666666667,
+  "matched_objects": 2564,
+  "matched_uncertain_pct": 50.11700468018721,
+  "matched_confident_accuracy": 0.9452697419859265
+}

@@ -23,7 +23,7 @@ from src.pipeline.report import DOMAIN_WARNING, detections_frame, to_csv, to_htm
 st.set_page_config(page_title="PlanktoScan AI", layout="wide")
 st.title("PlanktoScan AI")
 st.caption("Detect, classify and count plankton: YOLOv8n detector + EfficientNet-B0 classifier "
-           "(both trained from scratch on ZooLake-derived data).")
+           "(ImageNet/COCO-pretrained, fine-tuned on ZooLake-derived data).")
 st.warning(DOMAIN_WARNING)
 
 cfg = load_config()

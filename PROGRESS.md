@@ -110,3 +110,16 @@ file or console line), and problems hit. Final numbers live in `results/` and ar
   Label smoothing caps max softmax near 0.93, so coverage collapses above t = 0.9.
 - Detector tuning on val frames: NMS IoU 0.75, conf 0.50 (val P 0.961, R 0.947, F1 0.954 at IoU 0.5).
 - Final models: models/classifier_best.pt = cls_pt_rgb; models/detector_best.pt = detector_pt.
+
+## Phase 8: final evaluation (2026-11-12)
+- Test split and synthetic test frames used only by `scripts/evaluate.py`. It was run once, then rerun from a
+  clean state (all evaluation outputs deleted); the test and end-to-end metrics were identical.
+- TEST classifier: acc 0.9839, macro F1 0.9623 (day-block 95% CI 0.938-0.986), organisms 0.9888;
+  uncertain 3.8%, accepted acc 0.995. Reject F1 0.777. Diatom F1 0.976 (CI 0.842-1.000; 64 images, 9 days).
+- Detector, SYNTHETIC test: mAP50 0.978, mAP50-95 0.814.
+- End-to-end, SYNTHETIC test: detection F1 0.945, but 50.1% of matched objects flagged uncertain, so the
+  count MAE is 4.81 per frame (mean true 8.91) and counts are systematically under.
+- Diagnosis (VAL frames, GT boxes, `scripts/diagnose_frame_crops.py`): original crops 98.4% acc / 4.7% uncertain,
+  frame crops 76.0% / 49.3% (padding 0.1). The cause is the crop-vs-pasted-frame domain gap in the
+  classifier, not the detector. Not fixed: that would need a new model evaluated on fresh test data.
+- Open set: 71.9% uncertain, 18.2% reject, 9.9% wrongly an organism class (13.1% excluding maybe_cyano).
