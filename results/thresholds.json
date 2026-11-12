@@ -1,0 +1,6 @@
+{
+  "uncertainty_threshold": 0.59,
+  "uncertainty_target_accuracy": 0.97,
+  "uncertainty_val_coverage": 0.9527791441219872,
+  "uncertainty_val_accepted_accuracy": 0.9700567888487351
+}

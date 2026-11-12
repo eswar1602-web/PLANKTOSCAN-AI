@@ -3,10 +3,14 @@
 Detects, classifies and counts plankton in microscopy images. Computer Vision end-semester project
 based on SIH25043 (software and AI part).
 
-**Pipeline:** image → preprocessing (flat-field, denoise, CLAHE) → YOLOv8 organism detector → crop →
-EfficientNet classifier with confidence → per-class counts → annotated image + CSV / HTML / PDF report.
+**Pipeline:** image → YOLOv8n object detector → crop → preprocessing (illumination correction,
+denoising, CLAHE) → EfficientNet-B0 classifier with confidence → per-class counts (low-confidence items
+flagged **uncertain**, `reject` items listed separately) → annotated image + CSV / HTML / PDF report.
 
-> Status: Phase 1 (project setup). Sections marked *TBD* are filled in by later phases.
+> **Read the limitations first.** The models were trained on a freshwater dataset of single-organism
+> crops. Both networks were trained **from scratch** (no pretrained weights were available offline).
+> The detector was trained and evaluated only on **synthetic** frames. Results on real
+> microscope images are **not validated**.
 
 ## Data and important limitations
 
@@ -73,48 +77,102 @@ image (1 row). That leaves **14,043 images**.
 ## Project layout
 
 ```
-config.yaml        all paths, classes, seed and hyperparameters
-src/common/        config loader, seeding, experiment logging
-src/data/          download, class subset, leakage-safe split, imbalance report
-src/preprocess/    CLAHE, denoising, flat-field correction
-src/classify/      EfficientNet training and inference
-src/detect/        synthetic frame generator, YOLOv8 training and inference
-src/pipeline/      end-to-end image -> counts
-app/               Streamlit UI
-scripts/           command-line entry points
-tests/             pytest tests
-docs/viva_notes.md one-line justification for each design decision
-data/ models/ runs/ results/   generated, git-ignored
+config.yaml          all paths, classes, seed, hyperparameters and decisions
+src/common/          config loader, seeding, experiment logging (runs/<timestamp>_<name>/)
+src/data/            download, inventory, class mapping, dedupe, day-block split, leakage check
+src/preprocess/      illumination correction, denoising, CLAHE
+src/classify/        letterbox + cache, GPU augmentation, EfficientNet training, metrics
+src/detect/          synthetic frame generator, YOLO helpers (offline mode, matching)
+src/pipeline/        detect -> crop -> classify -> count; uncertain/reject logic; CSV/HTML/PDF reports
+src/evaluation.py    bootstrap CIs, count errors, figures
+app/                 Streamlit UI
+scripts/             command-line entry points (python -m scripts.<name>)
+tests/               pytest tests
+notebooks/           thin Colab backup notebook
+docs/viva_notes.md   one-line justification for each design decision and ablation
+results/             generated tables and figures (committed, except figures that contain dataset images)
+data/ models/ runs/  generated, git-ignored
 ```
 
 ## Setup (Windows, Python 3.12)
 
 ```powershell
 cd C:\Users\eswar\planktoscan-ai
+uv venv --python 3.12 .venv            # or: py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-# 1) PyTorch with CUDA. Check the exact command for your driver at https://pytorch.org/get-started/locally/
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-# 2) Everything else
-pip install -r requirements.txt
-# 3) Check it works
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126   # check pytorch.org for your driver
+pip install -r requirements.txt        # exact versions used: requirements-lock.txt
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-pytest
+pytest -q
 ```
 
-Colab backup notebook: *TBD (Phase 4)*.
+Colab backup: `notebooks/planktoscan_colab.ipynb`. It clones the repo and runs the same scripts.
 
 ## Usage
-*TBD (Phases 2–7).*
+
+Full reproduction, in order. Every script logs its config, seed, git commit and versions to `runs/`.
+
+```powershell
+python -m scripts.download_zoolake        # 492 MB, SHA-256 verified, safe extract
+python -m scripts.inventory_zoolake       # integrity check + raw class counts
+python -m scripts.make_splits             # mapping, dedupe, day-block split, leakage check, imbalance report
+python -m scripts.compare_preprocess      # results/preprocess_comparison.png
+# Phase 3 ablation (val macro F1 decides classifier.use_preprocess in config.yaml)
+python -m scripts.train_classifier --name abl_pre0 --use-preprocess 0 --weighting none --epochs 25
+python -m scripts.train_classifier --name abl_pre1 --use-preprocess 1 --weighting none --epochs 25
+# Phase 4 weighting experiment + selection by val macro F1
+python -m scripts.train_classifier --name cls_w0 --weighting none
+python -m scripts.train_classifier --name cls_w1 --weighting inverse_sqrt_freq
+python -m scripts.select_classifier --prefix cls_
+python -m scripts.choose_threshold        # uncertainty threshold on VAL
+# Phase 5 detector
+python -m scripts.make_synthetic          # 2000/300/300 frames, per-split crops only
+python -m scripts.train_detector          # YOLOv8n from scratch, time-capped
+python -m scripts.tune_detector           # NMS IoU + confidence on synthetic VAL frames
+# Phase 8: every table and figure + this README's results section
+python -m scripts.evaluate
+# App
+streamlit run app/streamlit_app.py
+```
+
+Resume an interrupted classifier run: `python -m scripts.train_classifier --resume runs/<run_dir>`.
 
 ## Results
-*TBD (Phase 8).* All numbers will come from `python evaluate.py` and be written to `results/`.
-The classifier is judged by per-class F1 and macro F1, because the classes are imbalanced.
+
+The classifier is judged by per-class F1 and macro F1, because the classes are imbalanced. All tuning
+(preprocessing, class weighting, epochs, uncertainty threshold, NMS/confidence) used the **validation**
+split only. The test split and the synthetic test frames were used only by `scripts/evaluate.py`.
+The section below is generated by that script; do not edit it by hand.
+
+<!-- RESULTS:START -->
+*Not generated yet. Run `python -m scripts.evaluate`.*
+<!-- RESULTS:END -->
 
 ## Reproducibility
-Fixed seed (`project.seed` in `config.yaml`). Each training or evaluation run writes its resolved
-config, seed, git commit and library versions to `runs/<timestamp>_<name>/`.
+- Fixed seed 42 (`project.seed`) for Python, NumPy, PyTorch, the split and the frame generator; cuDNN
+  deterministic mode for the classifier. YOLO training uses the same seed with `deterministic=False`
+  for speed, so detector numbers can differ slightly between reruns.
+- Each run writes `config.yaml` and `environment.json` (seed, git commit, library versions, command) to
+  `runs/<timestamp>_<name>/`.
+- Single seed per experiment: differences of about 1 macro-F1 point between ablation arms are within noise.
 
 ## Known limitations
-- Freshwater training data (see above).
-- Detector evaluated only on synthetic frames (see above).
-- *More TBD after evaluation.*
+- **Freshwater data, one lake, one camera.** ZooLake comes from Lake Greifensee and the Dual Scripps
+  Plankton Camera (dark field). SIH25043 targets marine plankton. Other microscopes, magnifications,
+  bright-field illumination and marine species are all out of domain.
+- **Domain shift to real microscope images.** No real multi-organism frames with labels exist in
+  ZooLake, so the full pipeline has never been validated on a real microscope image.
+- **Synthetic detector evaluation.** Detector mAP and end-to-end count errors are measured on
+  synthetic frames that we generated ourselves. They are optimistic upper bounds for real images.
+- **Trained from scratch.** No pretrained weights were available offline and downloads were not
+  allowed, so EfficientNet-B0 and YOLOv8n start from random weights. ImageNet/COCO initialisation
+  would likely improve both.
+- **Merged classes.** Classes such as `rotifer` (10 genera), `cladoceran` (3) and `diatom` (3) hide
+  within-class variety. `reject` mixes debris, moulted skins and unidentifiable objects, possibly including
+  organism fragments.
+- **Bloom-day diatom issue.** 64% of diatoms come from one bloom day (in train). Diatom test has few
+  images from few days and is mostly *fragilaria*, so its F1 is a weak estimate.
+- **Open set.** Organisms from the 10 excluded classes are not known to the classifier. The
+  uncertainty flag catches only part of them (see Results).
+- **Unclear dataset license** (see Data section).
+- **Single seed** per experiment; no repeated runs.

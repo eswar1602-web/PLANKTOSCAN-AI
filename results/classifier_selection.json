@@ -1,0 +1,18 @@
+{
+  "selected_run": "20261112_101020_cls_w0",
+  "criterion": "val_macro_f1",
+  "candidates": [
+    {
+      "run": "20261112_101020_cls_w0",
+      "preprocess": true,
+      "class_weighting": "none",
+      "val_macro_f1": 0.9054538950852234
+    },
+    {
+      "run": "20261112_102234_cls_w1",
+      "preprocess": true,
+      "class_weighting": "inverse_sqrt_freq",
+      "val_macro_f1": 0.9050910486399382
+    }
+  ]
+}

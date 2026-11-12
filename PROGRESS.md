@@ -51,3 +51,14 @@ file or console line), and problems hit. Final numbers live in `results/` and ar
 - Weighting experiment (40 epochs each, preprocessing on):
   - `python -m scripts.train_classifier --name cls_w0 --weighting none`
   - `python -m scripts.train_classifier --name cls_w1 --weighting inverse_sqrt_freq`
+  - Result (VAL, `results/ablation.csv`): unweighted macro F1 0.9055 (organisms 0.9576, acc 0.9518);
+    inverse-sqrt weighted 0.9051 (organisms 0.9549, acc 0.9469). Both best at epoch 37 of 40.
+    Epochs after the first took about 17 s (the first epoch about 70 s: CUDA/cuDNN start-up).
+  - **Decision:** unweighted (`python -m scripts.select_classifier --prefix cls_` ->
+    `results/classifier_selection.json`, `models/classifier_best.pt`). The gap is noise, consistent with the
+    ZooLake paper's finding that reweighting does not help. Weak spot: `reject` val F1 0.541 (w0) / 0.556 (w1),
+    while every organism class is at 0.92 or above.
+  - Note: the best epoch was 37 of 40, so the model may still have been improving slightly. 40 epochs kept each run
+    at about 12 min, well inside the 45-min budget; not extended, to avoid tuning more on val.
+- Uncertainty threshold (`python -m scripts.choose_threshold`, VAL only): 0.59 -> val coverage 0.9528,
+  accepted accuracy 0.9701 (target 0.97). `results/thresholds.json`, `results/uncertainty_curve.png`.
