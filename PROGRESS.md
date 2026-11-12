@@ -62,3 +62,51 @@ file or console line), and problems hit. Final numbers live in `results/` and ar
     at about 12 min, well inside the 45-min budget; not extended, to avoid tuning more on val.
 - Uncertainty threshold (`python -m scripts.choose_threshold`, VAL only): 0.59 -> val coverage 0.9528,
   accepted accuracy 0.9701 (target 0.97). `results/thresholds.json`, `results/uncertainty_curve.png`.
+
+## Change of plan: pretrained weights allowed (user decision)
+- **All results above (Phases 3-4 ablations, threshold 0.59, detector run `20261112_103529_detector`) are
+  FROM SCRATCH (random initialisation).** `results/ablation.md` now has an `init` column.
+- The user lifted the no-download rule for exactly two files from official sources. Downloaded with
+  `python -m scripts.fetch_pretrained` (allowlist of exactly two URLs; also in `results/pretrained_weights.json`,
+  `models/pretrained/manifest.json` and the `runs/*_fetch_pretrained/` log):
+  | file | URL | size (bytes) | SHA-256 | publisher checksum |
+  |---|---|---|---|---|
+  | yolov8n.pt | https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt | 6,549,796 | f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36 | matches GitHub release-asset digest |
+  | efficientnet_b0.ra_in1k (model.safetensors) | https://huggingface.co/timm/efficientnet_b0.ra_in1k/resolve/main/model.safetensors | 21,355,344 | d569899762ea9b1384ee07f4af64805cf8caa1c55f9253ebb1080dc40e87a2cd | matches HF LFS SHA-256 header |
+  The URLs are the ones the installed libraries themselves use: Ultralytics' default release tag `v8.4.0`, and timm's
+  default pretrained tag `efficientnet_b0.ra_in1k`. The publisher checksums were fetched as metadata
+  (GitHub releases API, HF HEAD request); no other files were downloaded.
+- `ultralytics_offline()` still blocks every Ultralytics download. The approved weights are loaded only as
+  local files (`models/pretrained/`), which the guard already allows. Nothing else was relaxed.
+- Verified: 358 of 360 EfficientNet tensors load from the local file (the 2 missing are the new 8-class head).
+- From-scratch detector run stopped by request after **7 epochs** (best synthetic-val mAP@0.5 0.937,
+  mAP@0.5:0.95 0.6825 at epoch 7, `results/ablation_detector.csv`); kept as the from-scratch ablation row.
+- **Deviation from the request, with reason:** "3-channel grayscale replication" assumes grayscale input, but
+  ZooLake crops are colour, and colour is class-informative. Measured on 40 train crops per class:
+  organism pixels deviate 7.6-17.8 gray levels from their gray value on average; diatoms are bluish
+  (mean B-R +2.9) while the other classes are red/gold (-18.7 to -47.0). So two pretrained runs were made:
+  `cls_pt_rgb` (only the initialisation changes vs `cls_w0`; the clean comparison) and `cls_pt_gray`
+  (grayscale replicated to 3 channels, as requested). Both use ImageNet mean/std normalisation (as all runs
+  do), the winning from-scratch settings (preprocessing on, unweighted), and an identical LR, epochs, split
+  and seed. The final model is picked by val macro F1.
+  - `python -m scripts.train_classifier --name cls_pt_rgb --pretrained 1 --grayscale 0 --weighting none`
+  - `python -m scripts.train_classifier --name cls_pt_gray --pretrained 1 --grayscale 1 --weighting none`
+  - `python -m scripts.train_detector --pretrained 1 --time-hours 0.667 --name detector_pt` (40 min cap)
+
+### Pretrained results (VAL only), 2026-11-12
+| model | init | val macro F1 | val acc | notes |
+|---|---|---|---|---|
+| cls_w0 | from scratch | 0.9055 | 0.9518 | previous final |
+| cls_pt_rgb | ImageNet, RGB | **0.9593** | 0.9823 | best epoch 29, early stop 39; **selected** |
+| cls_pt_gray | ImageNet, gray x3 | 0.9590 | 0.9784 | best epoch 28; same within noise |
+
+| detector | init | epochs | best val mAP50 | best val mAP50-95 | at epoch 7 (mAP50 / 50-95) |
+|---|---|---|---|---|---|
+| 20261112_103529_detector | from scratch | 7 (stopped by user) | 0.937 | 0.6825 | 0.937 / 0.6825 |
+| 20261112_111516_detector_pt | COCO yolov8n.pt (349/355 tensors) | 63 (40 min cap) | **0.9836** | **0.8402** | 0.9666 / 0.7669 |
+
+- Uncertainty: with target 0.97 the ImageNet model gave t = 0.00 (base val acc 0.982 > target, so nothing would be
+  flagged). Target raised to 0.99 on VAL before any test use: t = 0.84, val coverage 0.9498, accepted acc 0.9902.
+  Label smoothing caps max softmax near 0.93, so coverage collapses above t = 0.9.
+- Detector tuning on val frames: NMS IoU 0.75, conf 0.50 (val P 0.961, R 0.947, F1 0.954 at IoU 0.5).
+- Final models: models/classifier_best.pt = cls_pt_rgb; models/detector_best.pt = detector_pt.

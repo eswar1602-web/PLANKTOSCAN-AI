@@ -83,7 +83,9 @@ preprocess:
 
 classifier:
   backbone: efficientnet_b0          # timm name
-  pretrained: false                  # no cached ImageNet weights and downloads are not allowed
+  pretrained: false                  # from-scratch runs; ImageNet fine-tuning runs set this via --pretrained 1
+  pretrained_weights: efficientnet_b0.ra_in1k.safetensors   # in models/pretrained/ (scripts.fetch_pretrained)
+  grayscale: false                   # true -> grayscale replicated to 3 channels
   image_size: 128                    # aspect-preserving resize + pad (black = dark-field background)
   batch_size: 64
   epochs: 40
@@ -108,7 +110,9 @@ classifier:
 uncertainty:
   # Threshold on max softmax probability, chosen on the VAL split only (scripts.choose_threshold):
   # smallest threshold whose accepted (non-uncertain) val predictions reach this accuracy.
-  target_accepted_accuracy: 0.97
+  # 0.97 (set for the from-scratch model, base val acc 0.952 -> t=0.59) became degenerate for the ImageNet
+  # model (base val acc 0.982 -> t=0.00, nothing ever flagged). Raised to 0.99 on VAL before any test use.
+  target_accepted_accuracy: 0.99
 
 synthetic:
   image_size: 640
@@ -130,7 +134,8 @@ synthetic:
   single_class_detector: true        # detector finds "object"; the classifier names it or rejects it
 
 detector:
-  model: yolov8n.yaml                # built from scratch (no pretrained .pt available offline)
+  model: yolov8n.yaml                # from scratch; --pretrained uses models/pretrained/yolov8n.pt (COCO)
+  pretrained_weights: yolov8n.pt
   image_size: 640
   batch_size: 8                      # 4 GB VRAM
   epochs: 100

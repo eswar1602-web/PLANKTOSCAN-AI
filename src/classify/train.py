@@ -42,7 +42,8 @@ def class_list(cfg: dict[str, Any]) -> list[str]:
     return list(cfg["data"]["class_mapping"].keys())
 
 
-def load_split_arrays(cfg: dict[str, Any], splits: tuple[str, ...], use_preprocess: bool) -> dict:
+def load_split_arrays(cfg: dict[str, Any], splits: tuple[str, ...], use_preprocess: bool,
+                      grayscale: bool = False) -> dict:
     """{split: (uint8 images, int labels, dataframe)} for the requested splits."""
     classes = class_list(cfg)
     idx = {c: i for i, c in enumerate(classes)}
@@ -53,7 +54,7 @@ def load_split_arrays(cfg: dict[str, Any], splits: tuple[str, ...], use_preproce
     out = {}
     for s in splits:
         d = df[df["split"] == s].reset_index(drop=True)
-        x = build_array(d, root, size, pcfg, resolve_path(cfg, "processed_data") / "cache", s)
+        x = build_array(d, root, size, pcfg, resolve_path(cfg, "processed_data") / "cache", s, grayscale)
         out[s] = (x, d["target"].map(idx).to_numpy(), d)
     return out
 
@@ -89,12 +90,14 @@ def train_classifier(cfg: dict[str, Any], name: str, resume: Path | None = None)
     run_dir = resume if resume else start_run(cfg, name)
     classes = class_list(cfg)
 
-    data = load_split_arrays(cfg, ("train", "val"), ccfg["use_preprocess"])   # NO test split here
+    gray = bool(ccfg.get("grayscale", False))
+    data = load_split_arrays(cfg, ("train", "val"), ccfg["use_preprocess"], gray)   # NO test split here
     x_tr, y_tr, _ = data["train"]
     x_va, y_va, _ = data["val"]
     x_tr_t, y_tr_t = torch.from_numpy(x_tr), torch.from_numpy(y_tr).long()
 
-    model = build_model(ccfg["backbone"], len(classes), ccfg["pretrained"]).to(device)
+    weights = resolve_path(cfg, "models") / "pretrained" / ccfg["pretrained_weights"] if ccfg["pretrained"] else None
+    model = build_model(ccfg["backbone"], len(classes), ccfg["pretrained"], weights).to(device)
     counts = np.bincount(y_tr, minlength=len(classes)).astype(float)
     w = class_weights(counts, ccfg["class_weighting"])
     loss_fn = nn.CrossEntropyLoss(weight=None if w is None else w.to(device),
@@ -107,7 +110,7 @@ def train_classifier(cfg: dict[str, Any], name: str, resume: Path | None = None)
     use_amp = ccfg["amp"] and device == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     meta = {"backbone": ccfg["backbone"], "classes": classes, "image_size": ccfg["image_size"],
-            "use_preprocess": ccfg["use_preprocess"],
+            "use_preprocess": ccfg["use_preprocess"], "grayscale": gray, "pretrained": ccfg["pretrained"],
             "preprocess": cfg["preprocess"] if ccfg["use_preprocess"] else None,
             "class_weighting": ccfg["class_weighting"], "run": run_dir.name}
 
@@ -174,6 +177,7 @@ def train_classifier(cfg: dict[str, Any], name: str, resume: Path | None = None)
     logits = predict_logits(model, x_va, device, amp=use_amp)
     rep = classification_metrics(y_va, logits.argmax(1), classes, cfg["data"]["reject_class"])
     rep.update({"split": "val", "best_epoch": best_epoch, "run": run_dir.name,
+                "pretrained": ccfg["pretrained"], "grayscale": gray,
                 "use_preprocess": ccfg["use_preprocess"], "class_weighting": ccfg["class_weighting"],
                 "epochs_budget": ccfg["epochs"]})
     (run_dir / "val_report.json").write_text(json.dumps(rep, indent=2))

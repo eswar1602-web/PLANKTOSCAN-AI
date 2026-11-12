@@ -48,7 +48,7 @@ def main() -> None:
     cfg = load_config()
     device = get_device(cfg["project"]["device"])
     model, meta = load_checkpoint(resolve_path(cfg, "models") / "classifier_best.pt", device)
-    x, y, _ = load_split_arrays(cfg, ("val",), meta["use_preprocess"])["val"]   # VAL only
+    x, y, _ = load_split_arrays(cfg, ("val",), meta["use_preprocess"], meta.get("grayscale", False))["val"]   # VAL only
     probs = torch.softmax(torch.from_numpy(predict_logits(model, x, device)), 1).numpy()
     curve = selective_curve(probs, y, np.round(np.arange(0.0, 1.0, 0.01), 2))
     target = cfg["uncertainty"]["target_accepted_accuracy"]

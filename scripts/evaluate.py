@@ -52,7 +52,7 @@ def main() -> None:
     model, meta = load_checkpoint(resolve_path(cfg, "models") / "classifier_best.pt", device)
     classes = meta["classes"]
     organisms = [c for c in classes if c != reject]
-    arrays = load_split_arrays(cfg, ("val", "test"), meta["use_preprocess"])
+    arrays = load_split_arrays(cfg, ("val", "test"), meta["use_preprocess"], meta.get("grayscale", False))
     rep = {}
     for split in ("val", "test"):
         x, y, d = arrays[split]
@@ -97,7 +97,7 @@ def main() -> None:
     root = resolve_path(cfg, "raw_data") / "zoolake" / cfg["data"]["zoolake"]["images_subdir"]
     od = pd.read_csv(resolve_path(cfg, "processed_data") / "open_set.csv")
     ox = build_array(od, root, meta["image_size"], meta["preprocess"],
-                     resolve_path(cfg, "processed_data") / "cache", "openset")
+                     resolve_path(cfg, "processed_data") / "cache", "openset", meta.get("grayscale", False))
     oprob = torch.softmax(torch.from_numpy(predict_logits(model, ox, device)), 1).numpy()
     od = od.assign(pred=[classes[i] for i in oprob.argmax(1)], prob=oprob.max(1))
     od["outcome"] = np.where(od["prob"] < unc_t, UNCERTAIN, od["pred"])

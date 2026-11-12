@@ -39,33 +39,41 @@ def letterbox(img: np.ndarray, size: int) -> np.ndarray:
     return out
 
 
-def prepare_crop(img: np.ndarray, size: int, pcfg: dict[str, Any] | None) -> np.ndarray:
-    """THE single crop transform used in training and inference: [preprocess] -> letterbox."""
+def to_gray3(img: np.ndarray) -> np.ndarray:
+    """Grayscale replicated to 3 channels (keeps the 3-channel input an ImageNet model expects)."""
+    g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    return np.repeat(g[..., None], 3, axis=2)
+
+
+def prepare_crop(img: np.ndarray, size: int, pcfg: dict[str, Any] | None, grayscale: bool = False) -> np.ndarray:
+    """THE single crop transform used in training and inference: [preprocess] -> [gray x3] -> letterbox."""
     if pcfg is not None:
         img = preprocess(img, pcfg)
+    if grayscale:
+        img = to_gray3(img)
     return letterbox(img, size)
 
 
-def cache_key(size: int, pcfg: dict[str, Any] | None) -> str:
-    """Short hash identifying a (size, preprocessing) combination."""
-    blob = json.dumps({"size": size, "pre": pcfg}, sort_keys=True)
+def cache_key(size: int, pcfg: dict[str, Any] | None, grayscale: bool = False) -> str:
+    """Short hash identifying a (size, preprocessing, grayscale) combination."""
+    blob = json.dumps({"size": size, "pre": pcfg, **({"gray": True} if grayscale else {})}, sort_keys=True)
     return hashlib.sha1(blob.encode()).hexdigest()[:10]
 
 
 def build_array(
     df: pd.DataFrame, images_root: Path, size: int, pcfg: dict[str, Any] | None,
-    cache_dir: Path | None = None, name: str = "",
+    cache_dir: Path | None = None, name: str = "", grayscale: bool = False,
 ) -> np.ndarray:
     """Stack prepared crops into a (N, size, size, 3) uint8 array, cached on disk by content key."""
     path = None
     if cache_dir is not None:
-        key = cache_key(size, pcfg)
+        key = cache_key(size, pcfg, grayscale)
         ids = hashlib.sha1("\n".join(df["path"]).encode()).hexdigest()[:10]
         path = cache_dir / f"{name}_{key}_{ids}.npy"
         if path.exists():
             return np.load(path)
     arr = np.stack([
-        prepare_crop(load_rgb(images_root / p), size, pcfg)
+        prepare_crop(load_rgb(images_root / p), size, pcfg, grayscale)
         for p in tqdm(df["path"], desc=f"prepare {name}", leave=False)
     ])
     if path is not None:

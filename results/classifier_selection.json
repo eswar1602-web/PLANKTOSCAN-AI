@@ -1,5 +1,5 @@
 {
-  "selected_run": "20261112_101020_cls_w0",
+  "selected_run": "20261112_104503_cls_pt_rgb",
   "criterion": "val_macro_f1",
   "candidates": [
     {
@@ -13,6 +13,18 @@
       "preprocess": true,
       "class_weighting": "inverse_sqrt_freq",
       "val_macro_f1": 0.9050910486399382
+    },
+    {
+      "run": "20261112_104503_cls_pt_rgb",
+      "preprocess": true,
+      "class_weighting": "none",
+      "val_macro_f1": 0.95931143633637
+    },
+    {
+      "run": "20261112_105740_cls_pt_gray",
+      "preprocess": true,
+      "class_weighting": "none",
+      "val_macro_f1": 0.9590490695241778
     }
   ]
 }

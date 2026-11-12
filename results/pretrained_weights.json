@@ -1,0 +1,20 @@
+[
+  {
+    "file": "yolov8n.pt",
+    "url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt",
+    "source": "Ultralytics GitHub release assets (ultralytics/assets, tag v8.4.0)",
+    "size_bytes": 6549796,
+    "sha256": "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36",
+    "published_sha256": "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36",
+    "verified_against_publisher": true
+  },
+  {
+    "file": "efficientnet_b0.ra_in1k.safetensors",
+    "url": "https://huggingface.co/timm/efficientnet_b0.ra_in1k/resolve/main/model.safetensors",
+    "source": "timm official Hugging Face hub (timm/efficientnet_b0.ra_in1k, timm's default tag)",
+    "size_bytes": 21355344,
+    "sha256": "d569899762ea9b1384ee07f4af64805cf8caa1c55f9253ebb1080dc40e87a2cd",
+    "published_sha256": "d569899762ea9b1384ee07f4af64805cf8caa1c55f9253ebb1080dc40e87a2cd",
+    "verified_against_publisher": true
+  }
+]

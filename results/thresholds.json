@@ -1,6 +1,12 @@
 {
-  "uncertainty_threshold": 0.59,
-  "uncertainty_target_accuracy": 0.97,
-  "uncertainty_val_coverage": 0.9527791441219872,
-  "uncertainty_val_accepted_accuracy": 0.9700567888487351
+  "uncertainty_threshold": 0.84,
+  "uncertainty_target_accuracy": 0.99,
+  "uncertainty_val_coverage": 0.9498278406296115,
+  "uncertainty_val_accepted_accuracy": 0.9901605385810461,
+  "nms_iou": 0.75,
+  "det_conf": 0.5,
+  "det_val_precision": 0.9609996213555472,
+  "det_val_recall": 0.9466616933979858,
+  "det_val_f1": 0.9537767756482525,
+  "det_match_iou": 0.5
 }

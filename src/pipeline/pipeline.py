@@ -71,7 +71,7 @@ class Pipeline:
         """Softmax probabilities (N, n_classes); the same prepare_crop as in training."""
         if not crops:
             return np.zeros((0, len(self.classes)))
-        x = np.stack([prepare_crop(c, self.meta["image_size"], self.meta["preprocess"]) for c in crops])
+        x = np.stack([prepare_crop(c, self.meta["image_size"], self.meta["preprocess"], self.meta.get("grayscale", False)) for c in crops])
         logits = predict_logits(self.classifier, x, self.device)
         return torch.softmax(torch.from_numpy(logits), 1).numpy()
 

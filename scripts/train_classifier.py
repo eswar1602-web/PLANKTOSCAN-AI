@@ -22,6 +22,8 @@ def main() -> None:
     ap.add_argument("--use-preprocess", type=int, choices=[0, 1])
     ap.add_argument("--weighting", choices=["none", "inverse_sqrt_freq"])
     ap.add_argument("--epochs", type=int)
+    ap.add_argument("--pretrained", type=int, choices=[0, 1])
+    ap.add_argument("--grayscale", type=int, choices=[0, 1])
     ap.add_argument("--resume", type=Path, help="run directory to resume (uses its saved config)")
     a = ap.parse_args()
     if a.resume:
@@ -35,6 +37,10 @@ def main() -> None:
             c["class_weighting"] = a.weighting
         if a.epochs:
             c["epochs"] = a.epochs
+        if a.pretrained is not None:
+            c["pretrained"] = bool(a.pretrained)
+        if a.grayscale is not None:
+            c["grayscale"] = bool(a.grayscale)
     train_classifier(cfg, a.name, resume=a.resume)
 
 

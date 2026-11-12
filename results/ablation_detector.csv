@@ -1,0 +1,3 @@
+run,init,time_cap_h,epochs_trained,stopped_early_by_user,best_epoch,best_val_mAP50,best_val_mAP50_95,common_epoch,val_mAP50_at_common_epoch,val_mAP50_95_at_common_epoch
+20261112_103529_detector,from scratch,1.25,7,True,7,0.93705,0.68246,7,0.93705,0.68246
+20261112_111516_detector_pt,COCO (yolov8n.pt),0.667,63,False,63,0.98365,0.84015,7,0.96655,0.76693

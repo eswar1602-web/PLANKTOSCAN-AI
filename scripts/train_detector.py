@@ -20,6 +20,9 @@ from src.detect.yolo_utils import ultralytics_offline
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--resume", type=Path)
+    ap.add_argument("--pretrained", type=int, choices=[0, 1], default=0)
+    ap.add_argument("--time-hours", type=float)
+    ap.add_argument("--name", default="detector")
     a = ap.parse_args()
     ultralytics_offline()
     from ultralytics import YOLO
@@ -30,14 +33,18 @@ def main() -> None:
         YOLO(str(a.resume)).train(resume=True)
         return
     set_seed(cfg["project"]["seed"])
-    run_dir = start_run(cfg, "detector")
+    if a.pretrained:
+        dcfg["model"] = str(resolve_path(cfg, "models") / "pretrained" / dcfg["pretrained_weights"])
+    if a.time_hours:
+        dcfg["time_hours"] = a.time_hours
+    run_dir = start_run(cfg, a.name)
     model = YOLO(dcfg["model"])
     model.train(
         data=str(resolve_path(cfg, "synthetic_data") / "data.yaml"),
         imgsz=dcfg["image_size"], epochs=dcfg["epochs"], time=dcfg["time_hours"],
         patience=dcfg["patience"], batch=dcfg["batch_size"], workers=dcfg["workers"],
         amp=dcfg["amp"], seed=cfg["project"]["seed"], deterministic=False, single_cls=True,
-        pretrained=False, plots=False, project=str(run_dir), name="yolo", exist_ok=True, verbose=False,
+        pretrained=bool(a.pretrained), plots=False, project=str(run_dir), name="yolo", exist_ok=True, verbose=False,
     )
     best = run_dir / "yolo" / "weights" / "best.pt"
     models = resolve_path(cfg, "models")
