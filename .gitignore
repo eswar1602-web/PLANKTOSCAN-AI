@@ -28,6 +28,16 @@ models/
 runs/
 results/*
 !results/.gitkeep
+!results/*.md
+!results/*.csv
+!results/*.json
+!results/*.png
+# figures that contain ZooLake images (unclear license -> not redistributed)
+results/preprocess_comparison.png
+results/synthetic_examples.png
+results/pipeline_example*.png
+# per-image prediction dumps (large, contain dataset file paths only - regenerable)
+results/*_predictions.csv
 *.pt
 *.pth
 *.onnx

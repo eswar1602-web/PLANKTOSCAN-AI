@@ -1,0 +1,6 @@
+raw_class,target,path,reason
+asplanchna,rotifer,asplanchna\training_data\SPC-EAWAG-0P5X-1528850008503168-564006655548-019979-040-2066-568-76-56.jpeg,label_conflict
+dinobryon,dinobryon,dinobryon\training_data\SPC-EAWAG-0P5X-1528850008503168-564006655548-019979-040-2066-568-76-56.jpeg,label_conflict
+asterionella,diatom,asterionella\training_data\SPC-EAWAG-0P5X-1559498570246055-6403994484253-001609-528-1444-1354-100-100.jpeg,label_conflict
+dinobryon,dinobryon,dinobryon\training_data\SPC-EAWAG-0P5X-1559498570246055-6403994484253-001609-528-1444-1354-100-100.jpeg,label_conflict
+rotifers,rotifer,rotifers\training_data\SPC-EAWAG-0P5X-1589537326874154-10282734293288-005169-028-1252-974-40-64.jpeg,duplicate

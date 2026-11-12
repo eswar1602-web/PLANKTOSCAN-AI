@@ -1,0 +1,4 @@
+split,frames,objects,crops_available,unique_crops_used
+train,2000,17987,10146,8441
+val,300,2681,2033,1515
+test,300,2745,1864,1452

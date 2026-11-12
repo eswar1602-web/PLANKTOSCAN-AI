@@ -27,9 +27,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError(f"split ratios must sum to 1.0, got {total}")
     if not isinstance(cfg["project"]["seed"], int):
         raise ValueError("project.seed must be an integer")
-    thr = cfg["pipeline"]["classifier_conf_threshold"]
+    thr = cfg["uncertainty"]["target_accepted_accuracy"]
     if not 0.0 <= thr <= 1.0:
-        raise ValueError("pipeline.classifier_conf_threshold must be in [0, 1]")
+        raise ValueError("uncertainty.target_accepted_accuracy must be in [0, 1]")
 
 
 def resolve_path(cfg: dict[str, Any], key: str) -> Path:

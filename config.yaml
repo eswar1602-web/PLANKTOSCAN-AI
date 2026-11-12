@@ -65,65 +65,91 @@ data:
     small_image_px: 32               # pHash unreliable below this (min side), reported separately
 
 preprocess:
+  # One function (src/preprocess/enhance.py::preprocess) used identically in training and inference.
+  # Applied to each CROP before the classifier (decided by the Phase 3 ablation: classifier.use_preprocess).
+  illumination:
+    enabled: true
+    method: border_median            # border_median: subtract per-channel median of the crop border
+                                     # (dark-field background level); gaussian_subtract: for full frames
+    sigma_frac: 0.25                 # gaussian_subtract only: blur sigma as a fraction of max side
+  denoise:
+    enabled: true
+    method: nl_means                 # nl_means | bilateral | none
+    h: 5                             # small: crops are tiny (median 72x76 px)
   clahe:
     enabled: true
     clip_limit: 2.0
-    tile_grid_size: [8, 8]
-  denoise:
-    enabled: true
-    method: nl_means                 # nl_means | bilateral | gaussian
-    h: 7
-  flat_field:
-    enabled: true
-    method: gaussian_background      # estimate illumination by large blur, then divide
-    sigma: 51
+    tile_px: 32                      # tile size in pixels -> grid adapts to the image size
 
 classifier:
-  backbone: efficientnet_b0          # timm name; scale to efficientnet_b2 later
-  pretrained: true
-  image_size: 224
-  batch_size: 32                     # fits 4 GB RTX 3050 with AMP
-  epochs: 25
-  lr: 3.0e-4
-  weight_decay: 1.0e-4
-  label_smoothing: 0.0
-  class_weighting: inverse_sqrt_freq # none | inverse_freq | inverse_sqrt_freq
-  amp: true                          # mixed precision on CUDA
-  num_workers: 2                     # keep low on Windows
-  early_stopping_patience: 5
+  backbone: efficientnet_b0          # timm name
+  pretrained: false                  # no cached ImageNet weights and downloads are not allowed
+  image_size: 128                    # aspect-preserving resize + pad (black = dark-field background)
+  batch_size: 64
+  epochs: 40
+  lr: 1.0e-3                         # from scratch -> higher LR than fine-tuning
+  weight_decay: 0.05
+  warmup_epochs: 2
+  label_smoothing: 0.1
+  class_weighting: none              # none | inverse_sqrt_freq  (chosen by val macro F1 in Phase 4)
+  use_preprocess: true               # Phase 3: val macro F1 0.8621 vs 0.8608 without (results/ablation.csv); within noise
+  amp: true
+  num_workers: 0                     # augmentation runs on the GPU in batches; no worker processes
+  early_stopping_patience: 10
   selection_metric: macro_f1         # best checkpoint chosen by val macro F1
+  augment:
+    hflip: true
+    vflip: true
+    rotation_deg: 180                # plankton have no canonical orientation in the water
+    scale: [0.9, 1.1]
+    brightness: 0.15
+    contrast: 0.15
+
+uncertainty:
+  # Threshold on max softmax probability, chosen on the VAL split only (scripts.choose_threshold):
+  # smallest threshold whose accepted (non-uncertain) val predictions reach this accuracy.
+  target_accepted_accuracy: 0.97
 
 synthetic:
   image_size: 640
-  frames: {train: 2000, val: 300, test: 300}  # each split uses ONLY its own crops
+  frames: {train: 2000, val: 300, test: 300}  # each split uses ONLY its own crops (asserted)
   organisms_per_frame: [3, 15]
-  scale_range: [0.5, 1.5]
+  max_crop_side_px: 192              # larger crops are downscaled to this (keeps frames realistic)
+  scale_range: [0.8, 1.25]           # around native pixel size; crops are already small
   rotation_deg: 180
   max_overlap_iou: 0.3
-  alpha_blend: true                  # soft alpha masks, no hard paste seams
-  mask_feather_px: 3
+  alpha_low: 6                       # alpha ramps from (border level + low) ...
+  alpha_high: 30                     # ... to (border level + high) gray levels
+  mask_feather_px: 2
+  min_box_px: 4                      # skip a crop whose visible mask is smaller than this
   background:
-    type: procedural                 # procedural microscopy-style backgrounds
-    illumination_gradient: [0.6, 1.0]
-    gaussian_noise_std: [0.0, 8.0]
-    blur_sigma: [0.0, 1.2]
-  single_class_detector: true        # detector finds "organism"; classifier names it
+    base_level: [3, 14]              # dark-field background gray level
+    glow_strength: [0, 22]           # uneven illumination: low-frequency glow
+    noise_std: [1.0, 6.0]
+    debris_specks: [0, 25]           # tiny unlabeled specks (smaller than min_box_px)
+  single_class_detector: true        # detector finds "object"; the classifier names it or rejects it
 
 detector:
-  model: yolov8n.pt                  # scale to yolov8s.pt later
+  model: yolov8n.yaml                # built from scratch (no pretrained .pt available offline)
   image_size: 640
   batch_size: 8                      # 4 GB VRAM
-  epochs: 50
-  patience: 15
+  epochs: 100
+  time_hours: 1.25                   # hard cap (budget 90 min incl. eval)
+  patience: 20
   amp: true
   workers: 2
-  conf_threshold: 0.25
-  iou_threshold: 0.6                 # NMS IoU; tuned in Phase 5 for overlapping organisms
+  preprocess_frames: false           # frame-level preprocessing not used (see viva notes)
+  nms_iou_grid: [0.3, 0.45, 0.6, 0.75]
+  conf_grid_step: 0.01
+  match_iou: 0.5                     # IoU for counting a detection as correct (F1 / counting)
 
 pipeline:
-  classifier_conf_threshold: 0.6     # below this -> label "uncertain" (kept, not dropped)
-  min_box_area_px: 100
   crop_padding: 0.1
+  min_box_area_px: 16
+
+evaluation:
+  bootstrap_resamples: 1000
+  bootstrap_unit: day                # resample whole days: images within a day are correlated
 
 report:
   formats: [csv, html, pdf]
