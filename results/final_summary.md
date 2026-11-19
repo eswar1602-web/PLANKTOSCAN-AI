@@ -19,7 +19,7 @@ An end-to-end pipeline: a YOLOv8n single-class detector finds every object in a 
 cropped from the original image, preprocessed (border-median illumination correction, NL-means
 denoising, CLAHE) and classified by EfficientNet-B0 into 7 organism classes plus `reject`. Items
 below the val-chosen confidence threshold are counted as **uncertain** instead of being dropped.
-A Streamlit app shows the annotated image and counts and exports CSV, HTML and PDF reports.
+A web app (React frontend, FastAPI backend) shows the annotated image and counts and exports CSV, HTML and PDF reports.
 
 ## How it was evaluated
 

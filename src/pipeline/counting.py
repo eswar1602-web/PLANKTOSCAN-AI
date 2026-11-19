@@ -63,3 +63,24 @@ def counts_table(dets: list[Detection], organism_classes: list[str]) -> pd.DataF
         mean_p = round(sum(d.prob for d in sel) / len(sel), 3) if sel else None
         rows.append({"class": name, "count": counts[name], "type": kind, "mean_classifier_prob": mean_p})
     return pd.DataFrame(rows)
+
+
+def estimated_counts(dets: list[Detection], organism_classes: list[str], reject_class: str = REJECT) -> dict:
+    """Best-guess counts: every detection under its classifier argmax, uncertain ones included.
+
+    The strict `count_detections` stays the primary output. Here the part of each class that comes
+    from uncertain detections is kept separate in 'from_uncertain', so
+    estimate[c] = strict confident count[c] + from_uncertain[c] for every class (reject included).
+    """
+    names = organism_classes + [reject_class]
+    est = {c: 0 for c in names}
+    from_unc = {c: 0 for c in names}
+    for d in dets:
+        if d.label not in est:
+            raise ValueError(f"unknown label {d.label!r}")
+        est[d.label] += 1
+        if d.status == UNCERTAIN:
+            from_unc[d.label] += 1
+    out: dict = {**est, "total": len(dets), "from_uncertain": from_unc}
+    assert sum(est.values()) == len(dets) and sum(from_unc.values()) == sum(d.status == UNCERTAIN for d in dets)
+    return out

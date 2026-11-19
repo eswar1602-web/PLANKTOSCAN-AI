@@ -1,0 +1,60 @@
+{
+  "criterion": "macro F1 on VAL original + frame crops",
+  "selected": "v2",
+  "v1": {
+    "checkpoint": "models\\classifier_v1.pt",
+    "run": "20261112_104503_cls_pt_rgb",
+    "mixed_val_macro_f1": 0.8376789730968996,
+    "mixed_val_accuracy": 0.8630103295622233,
+    "original_crops": {
+      "n": 2033,
+      "accuracy": 0.9822921790457452,
+      "macro_f1": 0.95931143633637,
+      "macro_f1_organisms": 0.9895034301451663
+    },
+    "frame_crops": {
+      "n": 2033,
+      "accuracy": 0.7437284800787014,
+      "macro_f1": 0.7430216756095255,
+      "macro_f1_organisms": 0.8140691071005415
+    },
+    "per_class_f1": {
+      "copepod": 0.9193154034229829,
+      "diatom": 0.9558498896247241,
+      "nauplius": 0.9193548387096774,
+      "cladoceran": 0.897822445561139,
+      "rotifer": 0.9291139240506329,
+      "ceratium": 0.8858447488584474,
+      "dinobryon": 0.8431935669155658,
+      "reject": 0.35093696763202725
+    }
+  },
+  "v2": {
+    "checkpoint": "runs\\20261119_235518_cls_v2_frames\\best.pt",
+    "run": "20261119_235518_cls_v2_frames",
+    "mixed_val_macro_f1": 0.9454225109584753,
+    "mixed_val_accuracy": 0.9729463846532218,
+    "original_crops": {
+      "n": 2033,
+      "accuracy": 0.9788489916379735,
+      "macro_f1": 0.9562731956981088,
+      "macro_f1_organisms": 0.9863076885075891
+    },
+    "frame_crops": {
+      "n": 2033,
+      "accuracy": 0.9670437776684703,
+      "macro_f1": 0.9341259078751875,
+      "macro_f1_organisms": 0.9770962756668808
+    },
+    "per_class_f1": {
+      "copepod": 0.9827586206896551,
+      "diatom": 0.9818569903948773,
+      "nauplius": 0.975929978118162,
+      "cladoceran": 0.9892665474060823,
+      "rotifer": 0.9723756906077348,
+      "ceratium": 0.9831223628691983,
+      "dinobryon": 0.987012987012987,
+      "reject": 0.6910569105691057
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "created": "2026-11-19T21:38:57+00:00",
+  "files": [
+    {
+      "file": "detector_best.pt",
+      "role": "deployed detector (YOLOv8n, COCO-pretrained, fine-tuned on synthetic ZooLake frames)",
+      "bytes": 6509610,
+      "sha256": "4ec06d95129d36c1d562d1aa4926a262f6a52a474e1dd6c3a49a62cf1c226b51",
+      "train_run": "20261112_111516_detector_pt"
+    },
+    {
+      "file": "classifier_best.pt",
+      "role": "deployed classifier (= classifier_v2.pt)",
+      "bytes": 16347493,
+      "sha256": "dc5f11c1fee461d602dbd7eacada49b4ea834cee46ed7857a089587dd0653d1d",
+      "train_run": "20261119_235518_cls_v2_frames",
+      "backbone": "efficientnet_b0",
+      "classes": [
+        "copepod",
+        "diatom",
+        "nauplius",
+        "cladoceran",
+        "rotifer",
+        "ceratium",
+        "dinobryon",
+        "reject"
+      ],
+      "image_size": 128,
+      "best_epoch": 38,
+      "val_macro_f1": 0.9454,
+      "frame_crops": true
+    },
+    {
+      "file": "classifier_v2.pt",
+      "role": "classifier v2: EfficientNet-B0, original + synthetic-frame crops (Phase A)",
+      "bytes": 16347493,
+      "sha256": "dc5f11c1fee461d602dbd7eacada49b4ea834cee46ed7857a089587dd0653d1d",
+      "train_run": "20261119_235518_cls_v2_frames",
+      "backbone": "efficientnet_b0",
+      "classes": [
+        "copepod",
+        "diatom",
+        "nauplius",
+        "cladoceran",
+        "rotifer",
+        "ceratium",
+        "dinobryon",
+        "reject"
+      ],
+      "image_size": 128,
+      "best_epoch": 38,
+      "val_macro_f1": 0.9454,
+      "frame_crops": true
+    },
+    {
+      "file": "classifier_v1.pt",
+      "role": "classifier v1: EfficientNet-B0, original crops only (kept for comparison)",
+      "bytes": 16347365,
+      "sha256": "db6e6bb9e7241989b4d606d04af24575ff3e0de336e75018aed75763c0a40908",
+      "train_run": "20261112_104503_cls_pt_rgb",
+      "backbone": "efficientnet_b0",
+      "classes": [
+        "copepod",
+        "diatom",
+        "nauplius",
+        "cladoceran",
+        "rotifer",
+        "ceratium",
+        "dinobryon",
+        "reject"
+      ],
+      "image_size": 128,
+      "best_epoch": 29,
+      "val_macro_f1": 0.9593,
+      "frame_crops": false
+    }
+  ],
+  "thresholds": {
+    "det_conf": 0.5,
+    "nms_iou": 0.75,
+    "uncertainty_threshold": 0.89,
+    "uncertainty_threshold_v1": 0.84,
+    "uncertainty_classifier_run": "20261119_235518_cls_v2_frames"
+  },
+  "packages": {
+    "torch": "2.14.1+cu126",
+    "torchvision": "0.29.1+cu126",
+    "timm": "1.0.31",
+    "ultralytics": "8.4.210",
+    "opencv-python": "5.0.0.93",
+    "numpy": "2.5.4",
+    "fastapi": "0.165.0",
+    "reportlab": "5.1.0"
+  }
+}

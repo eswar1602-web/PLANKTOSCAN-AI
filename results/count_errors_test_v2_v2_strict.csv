@@ -1,0 +1,10 @@
+class,mean_true_per_frame,mean_pred_per_frame,MAE,mean_signed_error
+copepod,0.9533,0.89,0.11,-0.0633
+diatom,0.32,0.3067,0.0333,-0.0133
+nauplius,1.12,0.9733,0.1667,-0.1467
+cladoceran,1.3833,1.3167,0.1733,-0.0667
+rotifer,1.83,1.6167,0.26,-0.2133
+ceratium,0.5967,0.5367,0.08,-0.06
+dinobryon,2.3967,2.1833,0.2933,-0.2133
+reject,0.3133,0.12,0.2067,-0.1933
+ALL organisms,8.6,7.8233,0.95,-0.7767

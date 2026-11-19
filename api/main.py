@@ -1,0 +1,248 @@
+"""PlanktoScan REST API. A thin HTTP layer over src/service.py (the same service the CLI uses).
+
+    python -m api                       # serve on http://127.0.0.1:8000 (and the built frontend, if present)
+    uvicorn api.main:create_app --factory --reload   # development (no app is built at import time)
+
+Endpoints (JSON unless noted; every error is {"error": {"code": ..., "message": ...}}):
+  GET    /api/health                              liveness + whether the models loaded
+  GET    /api/info                                default thresholds, input limits, classes, model identity
+  GET    /api/examples                            synthetic VAL frames offered as examples (if generated)
+  GET    /api/examples/{name}                     an example image (image/jpeg)
+  POST   /api/analyses                            multipart: file (or example=<name>), det_conf, uncertainty
+  GET    /api/analyses?limit&offset&status        history, newest first
+  GET    /api/analyses/{id}                       one analysis: history record + canonical result + links
+  GET    /api/analyses/{id}/images/{kind}         original | enhanced | annotated
+  GET    /api/analyses/{id}/reports/{fmt}         csv | json | html | pdf (download)
+  DELETE /api/analyses/{id}                       remove one analysis and its stored files
+  DELETE /api/analyses?confirm=true               clear the history
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from src.common.config import PROJECT_ROOT, load_config, resolve_path
+from src.history import AnalysisHistory
+from src.service import (
+    AnalysisError, AnalysisSettings, ImageTooLargeError, InvalidImageError, ModelLoadError, load_saved_result,
+    new_analysis_id, safe_stem, save_outputs,
+)
+
+HTTP_STATUS = {"invalid_image": 400, "unsupported_format": 415, "image_too_small": 422, "image_too_large": 413,
+               "model_load_error": 503, "inference_error": 500}
+IMAGE_KINDS = ("original", "enhanced", "annotated")
+REPORT_FORMATS = {"csv": "text/csv", "json": "application/json", "html": "text/html", "pdf": "application/pdf"}
+N_EXAMPLES = 6
+
+
+def error(status: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+def create_app(service: Any | None = None, history_root: Path | None = None, cfg: dict | None = None,
+               load_models: bool = True, frontend_dist: Path | None = None) -> FastAPI:
+    """Build the app. Tests pass a fake `service` and a temporary `history_root`."""
+    cfg = cfg or load_config()
+    root = Path(history_root or os.environ.get("PLANKTOSCAN_HISTORY_DIR") or resolve_path(cfg, "history"))
+    history = AnalysisHistory(root / "history.sqlite", managed_root=root)
+    example_dir = resolve_path(cfg, "synthetic_data") / "images" / "val"
+    dist = Path(frontend_dist) if frontend_dist else PROJECT_ROOT / "frontend" / "dist"
+    state: dict[str, Any] = {"service": service, "model_error": None}
+    lock = threading.Lock()                      # one analysis at a time on the one GPU
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if state["service"] is None and load_models:
+            try:
+                from src.service import AnalysisService
+                state["service"] = await run_in_threadpool(AnalysisService, cfg)
+            except ModelLoadError as e:          # keep serving history; analysis answers 503
+                state["model_error"] = str(e)
+        yield
+
+    app = FastAPI(title="PlanktoScan AI", version="2.0", lifespan=lifespan,
+                  description="Detect, classify and count plankton in dark-field microscopy images.")
+
+    # ---------------- errors: one envelope for everything
+    @app.exception_handler(ApiError)
+    async def _api_error(_: Request, e: ApiError):
+        return error(e.status, e.code, e.message)
+
+    @app.exception_handler(AnalysisError)
+    async def _analysis_error(_: Request, e: AnalysisError):
+        return error(HTTP_STATUS.get(e.code, 400), e.code, str(e))
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation(_: Request, e: RequestValidationError):
+        first = e.errors()[0] if e.errors() else {}
+        where = ".".join(str(p) for p in first.get("loc", []) if p not in ("body", "query", "path"))
+        return error(422, "bad_request", f"{where}: {first.get('msg', 'invalid request')}" if where else "Invalid request.")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(_: Request, e: StarletteHTTPException):
+        return error(e.status_code, "not_found" if e.status_code == 404 else "http_error", str(e.detail))
+
+    def svc():
+        if state["service"] is None:
+            raise ApiError(503, "model_load_error", state["model_error"] or "The models are not loaded.")
+        return state["service"]
+
+    def examples() -> list[Path]:
+        return sorted(example_dir.glob("*.jpg"))[:N_EXAMPLES] if example_dir.is_dir() else []
+
+    def links(analysis_id: str, files: dict[str, str]) -> dict[str, dict[str, str]]:
+        base = f"/api/analyses/{analysis_id}"
+        return {"images": {k: f"{base}/images/{k}" for k in IMAGE_KINDS if k in files},
+                "reports": {k: f"{base}/reports/{k}" for k in REPORT_FORMATS if k in files}}
+
+    def record(analysis_id: str) -> dict:
+        rec = history.get(analysis_id)
+        if rec is None:
+            raise ApiError(404, "not_found", f"No analysis with id {analysis_id}.")
+        return rec
+
+    def summary(rec: dict) -> dict:
+        keys = ("analysis_id", "created_at", "filename", "status", "error_code", "error_message", "n_detections",
+                "confirmed_total", "estimated_total", "uncertain", "rejected", "processing_ms", "det_conf",
+                "uncertainty", "classifier_run")
+        return {**{k: rec.get(k) for k in keys}, "links": links(rec["analysis_id"], rec.get("files") or {})}
+
+    # ---------------- service information
+    @app.get("/api/health")
+    def health() -> dict:
+        s = state["service"]
+        return {"status": "ok" if s is not None else "degraded", "models_loaded": s is not None,
+                "error": state["model_error"], "device": s.model_info["device"] if s is not None else None}
+
+    @app.get("/api/info")
+    def info() -> dict:
+        s = svc()
+        sc = cfg["service"]
+        from src.pipeline.report import DOMAIN_WARNING
+        return {"defaults": s.defaults, "formats": sc["formats"],
+                "limits": {"max_file_mb": sc["max_file_mb"], "max_megapixels": sc["max_megapixels"],
+                           "min_side_px": sc["min_side_px"]},
+                "classes": {"organisms": list(s.pipe.organisms), "reject": s.pipe.reject},
+                "models": s.model_info, "disclaimer": DOMAIN_WARNING}
+
+    @app.get("/api/examples")
+    def list_examples() -> list[dict]:
+        return [{"name": p.name, "url": f"/api/examples/{p.name}",
+                 "note": "synthetic validation frame (generated, not a real microscope image)"} for p in examples()]
+
+    @app.get("/api/examples/{name}")
+    def example_image(name: str):
+        p = next((p for p in examples() if p.name == name), None)
+        if p is None:
+            raise ApiError(404, "not_found", f"No example named {name}.")
+        return FileResponse(p, media_type="image/jpeg")
+
+    # ---------------- analyses
+    @app.post("/api/analyses", status_code=201)
+    async def create_analysis(file: UploadFile | None = File(None), example: str | None = Form(None),
+                              det_conf: float | None = Form(None, ge=0, le=1),
+                              uncertainty: float | None = Form(None, ge=0, le=1)) -> dict:
+        s = svc()
+        max_bytes = int(cfg["service"]["max_file_mb"] * 1024 * 1024)
+        if file is not None and file.filename:
+            name = Path(file.filename).name[:200] or "upload"
+            data = await file.read(max_bytes + 1)               # never read more than the limit
+            if len(data) > max_bytes:
+                e = ImageTooLargeError(f"{name}: the file is above the {cfg['service']['max_file_mb']} MB limit.")
+                history.add_failure(new_analysis_id(), name, e.code, str(e))
+                raise e
+        elif example:
+            p = next((p for p in examples() if p.name == example), None)
+            if p is None:
+                raise ApiError(404, "not_found", f"No example named {example}.")
+            name, data = p.name, p.read_bytes()
+        else:
+            raise InvalidImageError("No image was sent. Attach a file in the 'file' field.")
+        settings = AnalysisSettings(det_conf=det_conf, uncertainty=uncertainty)
+        t0 = time.perf_counter()
+
+        def work():
+            with lock:
+                res = s.analyze_bytes(data, name, settings)
+            folder, files = save_outputs(res, root, original_bytes=data)
+            history.add_result(res.to_dict(), folder, files)
+            return res, files
+
+        try:
+            res, files = await run_in_threadpool(work)
+        except AnalysisError as e:                               # the failure is part of the history too
+            history.add_failure(new_analysis_id(), name, e.code, str(e), None, (time.perf_counter() - t0) * 1000)
+            raise
+        return {"result": res.to_dict(), "links": links(res.analysis_id, files)}
+
+    @app.get("/api/analyses")
+    def list_analyses(limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
+                      status: str | None = Query(None, pattern="^(ok|no_detections|failed)$")) -> dict:
+        return {"items": [summary(r) for r in history.list(limit=limit, offset=offset, status=status)],
+                "total": history.count(), "limit": limit, "offset": offset}
+
+    @app.get("/api/analyses/{analysis_id}")
+    def get_analysis(analysis_id: str) -> dict:
+        rec = record(analysis_id)
+        result = None
+        if rec["status"] != "failed" and rec.get("output_dir") and (Path(rec["output_dir"]) / "report.json").is_file():
+            result = load_saved_result(Path(rec["output_dir"]))
+        return {**summary(rec), "warnings": rec.get("warnings") or [], "result": result,
+                "files_missing": rec["status"] != "failed" and result is None}
+
+    def stored_file(analysis_id: str, kind: str) -> Path:
+        files = record(analysis_id).get("files") or {}
+        p = Path(files[kind]) if kind in files else None
+        if p is None or not p.is_file():
+            raise ApiError(404, "not_found", f"Analysis {analysis_id} has no stored {kind} file.")
+        return p
+
+    @app.get("/api/analyses/{analysis_id}/images/{kind}")
+    def get_image(analysis_id: str, kind: str):
+        if kind not in IMAGE_KINDS:
+            raise ApiError(404, "not_found", f"Unknown image kind {kind!r}; use one of {', '.join(IMAGE_KINDS)}.")
+        return FileResponse(stored_file(analysis_id, kind))
+
+    @app.get("/api/analyses/{analysis_id}/reports/{fmt}")
+    def get_report(analysis_id: str, fmt: str):
+        if fmt not in REPORT_FORMATS:
+            raise ApiError(404, "not_found", f"Unknown report format {fmt!r}; use one of {', '.join(REPORT_FORMATS)}.")
+        p = stored_file(analysis_id, fmt)
+        stem = safe_stem(record(analysis_id)["filename"])
+        return FileResponse(p, media_type=REPORT_FORMATS[fmt], filename=f"{stem}_{analysis_id}_planktoscan.{fmt}")
+
+    @app.delete("/api/analyses/{analysis_id}", status_code=204)
+    def delete_analysis(analysis_id: str) -> Response:
+        if not history.delete(analysis_id):
+            raise ApiError(404, "not_found", f"No analysis with id {analysis_id}.")
+        return Response(status_code=204)
+
+    @app.delete("/api/analyses")
+    def clear_analyses(confirm: bool = Query(False)) -> dict:
+        if not confirm:
+            raise ApiError(400, "confirmation_required", "Add ?confirm=true to delete the whole history.")
+        return {"deleted": history.clear()}
+
+    # ---------------- the built frontend (production); in development Vite serves it and proxies /api
+    if (dist / "index.html").is_file():
+        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+    return app
+

@@ -13,6 +13,54 @@ from sklearn.metrics import precision_recall_fscore_support
 SURFACE, INK, INK2, GRID, BLUE, ORANGE = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df", "#2a78d6", "#eb6834"
 
 
+def frame_record(dets: list, objs: list[dict], organisms: list[str], reject: str, match_iou: float) -> dict:
+    """Per-frame end-to-end record: strict and estimated counts vs GT, and detection matching stats.
+
+    dets: pipeline Detections; objs: ground-truth objects with 'box' and 'target'.
+    """
+    from src.detect.yolo_utils import greedy_match
+    from src.pipeline.counting import UNCERTAIN, count_detections, estimated_counts
+    cols = organisms + [reject]
+    c, e = count_detections(dets, organisms), estimated_counts(dets, organisms, reject)
+    g = pd.Series([o["target"] for o in objs], dtype=object).value_counts()
+    gb = np.array([o["box"] for o in objs], dtype=float).reshape(-1, 4)
+    pb = np.array([d.box for d in dets], dtype=float).reshape(-1, 4)
+    pairs = greedy_match(pb, np.array([d.det_conf for d in dets]), gb, match_iou)
+    unc = sum(dets[i].status == UNCERTAIN for i, _ in pairs)
+    correct = sum(dets[i].status != UNCERTAIN and dets[i].label == objs[j]["target"] for i, j in pairs)
+    return {"strict": {k: c[k] for k in cols}, "estimated": {k: e[k] for k in cols},
+            "gt": {k: int(g.get(k, 0)) for k in cols}, "uncertain": c[UNCERTAIN],
+            "tp": len(pairs), "n_pred": len(dets), "n_gt": len(objs), "matched_uncertain": int(unc),
+            "matched_correct": int(correct)}
+
+
+def summarize_frames(recs: list[dict], organisms: list[str], reject: str) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
+    """(summary, strict count errors, estimated count errors) over frame records."""
+    from src.detect.yolo_utils import detection_prf
+    cols = organisms + [reject]
+    G = pd.DataFrame([r["gt"] for r in recs], columns=cols)
+    errs = {}
+    for kind in ("strict", "estimated"):
+        P = pd.DataFrame([r[kind] for r in recs], columns=cols)
+        e = count_errors(P, G)
+        tp_, tt = P[organisms].sum(axis=1), G[organisms].sum(axis=1)
+        e.loc["ALL organisms"] = [tt.mean(), tp_.mean(), (tp_ - tt).abs().mean(), (tp_ - tt).mean()]
+        e.index.name = "class"
+        errs[kind] = e
+    tp, n_pred, n_gt = (sum(r[k] for r in recs) for k in ("tp", "n_pred", "n_gt"))
+    mu, mc = sum(r["matched_uncertain"] for r in recs), sum(r["matched_correct"] for r in recs)
+    p, rc, f1 = detection_prf(tp, n_pred, n_gt)
+    s = {"frames": len(recs), "gt_objects": n_gt, "detections": n_pred, "det_precision": p, "det_recall": rc,
+         "det_f1": f1, "matched_objects": tp, "matched_uncertain_pct": 100 * mu / max(1, tp),
+         "matched_confident_accuracy": mc / max(1, tp - mu),
+         "uncertain_per_frame": float(np.mean([r["uncertain"] for r in recs])) if recs else 0.0}
+    for kind, e in errs.items():
+        s[f"{kind}_count_MAE"] = float(e.loc["ALL organisms", "MAE"])
+        s[f"{kind}_count_signed_error"] = float(e.loc["ALL organisms", "mean_signed_error"])
+    s["mean_true_per_frame"] = float(errs["strict"].loc["ALL organisms", "mean_true_per_frame"])
+    return s, errs["strict"], errs["estimated"]
+
+
 def bootstrap_f1(y: np.ndarray, pred: np.ndarray, groups: np.ndarray, n_classes: int,
                  n_boot: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
     """Per-class and macro F1 over n_boot resamples of whole groups (e.g. days).

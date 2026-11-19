@@ -138,3 +138,104 @@ file or console line), and problems hit. Final numbers live in `results/` and ar
     177.6 / 464.0 ms per frame (8.5 detections on average).
   - Sizes: classifier 16.35 MB .pt / 16.05 MB ONNX; detector 6.51 MB .pt (fp16) / 12.63 MB ONNX (fp32).
 - Tests: +14 (tests/test_real_eval.py, tests/test_onnx.py); pytest 69 passed.
+
+## Backend v2, Phase A: fixing undercounting (2026-11-19/20)
+- `models/classifier_v1.pt` = copy of the v1 `classifier_best.pt` (SHA-256 db6e6bb9...0908, unchanged).
+- Box error of the detector on synthetic VAL frames (`python -m scripts.calibrate_box_jitter`,
+  `results/box_jitter_val.json`): 2,538 matched boxes, edge offsets mean about 0, pooled std 0.0605 of box side
+  (90th percentile of |offset| 0.041). Frame-crop jitter set to 0.06.
+- Frame crops (`src/classify/frame_crops.py`): 10,146 train (from train frames) + 2,033 val (from val frames),
+  one per original crop, GT box + jitter, `pad_crop` padding 0.1 (now shared with the pipeline; a test proves it
+  matches the old pipeline crop). Cross-split crops and test frames are refused in code.
+- Baseline on VAL frame crops, v1 at t 0.84: acc 0.7437, uncertain 0.5007 (original val crops: acc 0.9823,
+  macro F1 0.9593, identical to the recorded v1 numbers).
+- A 1-epoch smoke run (scratchpad) found a key collision in the val report (frame-crop metrics overwritten by a
+  flag); fixed before the real run.
+- Training: `python -m scripts.train_classifier --name cls_v2_frames --pretrained 1 --grayscale 0 --weighting none --frame-crops 1`
+  -> `runs/20261119_235518_cls_v2_frames`, 40 epochs, 1,709 s (estimate was 23 min; real epochs took 31-47 s).
+  Best epoch 38: mixed VAL macro F1 0.9454; original crops acc 0.9788 / macro F1 0.9563; frame crops acc 0.9670 /
+  macro F1 0.9341.
+- `python -m scripts.select_classifier_v2 --run runs/20261119_235518_cls_v2_frames`: v2 0.9454 vs v1 0.8377 on
+  mixed VAL -> v2 is `models/classifier_best.pt` and `models/classifier_v2.pt` (SHA-256 dc5f11c1...1d1d).
+  First attempt crashed on a relative-path bug (fixed); my command chain then ran choose_threshold on v1, which
+  re-derived the same 0.84; thresholds.json was restored from a copy before the real v2 run.
+- `python -m scripts.choose_threshold` (mixed VAL, target 0.99): t = 0.89, coverage 0.9110, accepted acc 0.9908.
+  v1 values kept as `uncertainty_threshold_v1` = 0.84. Coverage cliff: 0.957 at 0.85, 0.800 at 0.90.
+- Success rule (set by the user before the VAL dry run), VAL dry run `runs/20261120_002740_evaluate_v2_dryrun_val`:
+  frame-crop acc 0.9670 (>= 0.95: met), frame-crop uncertain 0.1003 / matched uncertain 8.35% (~10%: met, just),
+  original-crop macro F1 0.9563 (-0.0030 vs 0.9593: met), strict count MAE 0.86 vs v1 4.52 on VAL frames (met).
+- Reject, VAL frame crops (n=70): v2 18 confident reject, 43 uncertain, 9 confidently an organism; v1 34 / 35 / 1.
+  Saved as `reject_frame_crop_outcomes_val.csv` in the dry-run folder. User decision: no reject retrain.
+- Fresh test frames: `python -m scripts.make_synthetic --fresh-test-seed 2026` -> `data/synthetic_test_v2`
+  (300 frames, 2,674 objects, 1,435 of 1,864 test crops). Hash lists of `data/synthetic/` + `results/` before and
+  after are in `runs/20261120_003538_synthetic_test_seed2026/`: all 5,249 existing files unchanged; only new files.
+- v1 evaluation outputs copied to `results/v1/` (21 files, verified identical).
+- Second VAL dry run after adding the sensitivity table: the re-thresholded 0.89 row equals the main v2 row.
+- ONE-SHOT `python -m scripts.evaluate_v2` -> run `20261120_004219_evaluate_v2`, `results/v1_vs_v2.{json,md}`:
+  | fresh synthetic test | v1 (t 0.84) | v2 (t 0.89) |
+  |---|---|---|
+  | matched uncertain | 47.83% | 8.38% |
+  | count MAE strict / signed | 4.43 / -4.42 | 0.95 / -0.78 |
+  | count MAE estimated / signed | 1.53 / -1.34 | 0.54 / -0.15 |
+  | detection F1 (same detector) | 0.9464 | 0.9464 |
+  | test-crop macro F1 / acc / uncertain | 0.9623 / 0.9839 / 0.038 | 0.9606 / 0.9834 / 0.053 |
+  Detector on fresh frames: mAP@0.5 0.9767, mAP@0.5:0.95 0.8138. Reject test-crop F1 0.7767 -> 0.7636.
+  v2 sensitivity (report only): t 0.85 -> 4.35% uncertain, MAE 0.71; t 0.90 -> 21.10%, MAE 1.90.
+- Tests: 109 passed (+40: frame crops, estimated_counts invariants, per-frame scoring).
+
+## Application completion: service, history, CLI, reports, app, packaging (2026-11-20)
+Scope: the user's "complete the project" brief (supersedes the per-stage Phase C brief). No retraining, no weight
+changes, no test data accessed, no evaluation results modified. Phase B (imgsz/tiling experiments) and the dist/
+weight export were not done (not in this brief); a model manifest replaces the export.
+- `src/service.py`: `AnalysisService` (models loaded once, warm-up of detector + classifier), `analyze(path)`,
+  `analyze_bytes`, typed errors (`invalid_image`, `unsupported_format`, `image_too_small`, `image_too_large`,
+  `model_load_error`, `inference_error`), canonical `AnalysisResult.to_dict()`, `save_outputs` (unique folders).
+- `src/history.py`: SQLite history (metadata + paths only), add / failure / list / get / delete / clear.
+- `scripts/analyze.py`: CLI for images and folders; per-image folders, batch CSV/JSON, exit codes 0/1/2.
+- `src/pipeline/report.py`: rebuilt on the canonical result (CSV with summary/counts/detections, JSON, HTML, PDF).
+- `src/pipeline/pipeline.py`: per-stage timings (`src/common/timing.py`, CUDA-synchronised); `#id` labels in the
+  annotated image; classifier inference in a fixed padded batch of 32 (`pipeline.classifier_batch`).
+- The first prototype UI (since removed, see the next section) was rebuilt on the service: Analyze / History / About tabs.
+- `scripts/package_models.py`: `models/MANIFEST.json` + `results/model_manifest.json`; `--check` passes.
+- Bugs found and fixed while testing:
+  - Ultralytics' patched `PIL.Image.open` raised `ModuleNotFoundError: pi_heif` on non-image files;
+    now an `InvalidImageError`.
+  - cuDNN set-up cost 6-12 s per new batch shape (classifier fp32 and fp16 alike; 100-170 ms with cuDNN off),
+    and the batch size is the number of detections. Fixed batch 32: on 300 synthetic VAL frames (2,641 detections),
+    0 label and 0 status changes vs the old code, max probability difference 2.9e-3, wall time 59 s vs 181 s.
+  - Warm-up on a blank frame did not warm the classifier (first image 6.8 s); the classifier is now warmed too.
+  - History listed same-second analyses in random order; now ordered by time, then insertion order.
+  - Enhanced preview took 3.6-8.5 s on 1000-2448 px images; capped at 800 px.
+- Measured (RTX 3050 Laptop; 640x640 synthetic VAL frames): service load + warm-up 22.6 s; detection 20-150 ms,
+  classification 40-110 ms, enhanced preview about 0.8 s. CPU only (`device: cpu`): load 12.1 s, detection 78-107 ms,
+  classification 175-214 ms, same counts as on the GPU.
+- CLI smoke test (scratchpad): 3 synthetic VAL frames + black frame + 3 broken files -> 4 analysed, 3 failed with
+  the expected codes, exit code 1. All 3 VAL frames have 3 pasted organisms, and the confirmed counts matched the
+  ground-truth classes exactly.
+- Prototype UI: started headless (health `ok`, HTTP 200) and its UI tests ran the real models on an example
+  synthetic VAL frame (metrics, counts, 4 downloads, 1 history record).
+- Real-image testing: `data/real_samples/` does not exist, so no real-image observations exist; the README says so.
+- README rewritten (overview, problem, features, architecture, pipeline, models + weights, install, CUDA/CPU, app,
+  CLI, report example, dataset, training, results with synthetic qualifications, real-image testing, limitations,
+  future work). The generated RESULTS and EMBEDDED blocks are unchanged.
+- Tests: 149 passed (+40 in this stage: service 23, report 4, history 6, CLI 6, pipeline batch/timing 3; app tests rewritten).
+
+## Web application: FastAPI + React, prototype UI removed (2026-11-20)
+Scope: the user's request to build the frontend with the Hallmark skill in React + Vite on a FastAPI backend and to
+remove the earlier prototype UI completely. No retraining, no weight changes, no test data, no evaluation results modified.
+- Removed: the prototype UI module and its test, its package and 11 packages only it used (`pip uninstall`; `pip check`
+  clean), its lines in requirements.txt / requirements-lock.txt, .gitignore, CLAUDE.md, README and docs. Its reusable
+  logic (analyse once per upload, record failures, history folder override, example frames) moved into the API.
+- Added `api/` (FastAPI 0.165): health, info, examples, POST analyses (multipart), history list/detail, stored images,
+  report downloads, delete, clear; one JSON error envelope; GPU lock; serves `frontend/dist`. `python -m api`.
+- Added `frontend/` (React 19 + Vite 8, Vitest): Analyse view (upload with browser validation, example frames,
+  thresholds, loading/error/result states), the specimen frame (original/enhanced/annotated, live SVG boxes linked
+  to the detection table), counts by class, detections, timings, four downloads; History list and previous-analysis
+  view with delete; URL-addressable views. Fonts bundled via @fontsource.
+- Hallmark: theme Terrazzo (deal 1/3), app scope. sloplint static and render tier on three live URLs at 1280, 1440,
+  1920 and 375: 0 FAIL, 0 WARN after fixes (375 overflow of the result sheet, phone tables restacked, frame well,
+  footer measure, delete as outline); F4 and F25 dismissed and F6 answered on the record in `frontend/src/styles/app.css`.
+- Bug found by the API tests: an over-limit upload was refused but not recorded in the history; fixed.
+- Verified live with the real models (history in the scratchpad): `GET /` 200 (built app), health `ok` on cuda,
+  example `val_00001.jpg` analysed in 1.59 s (same counts as the CLI: diatom 2, dinobryon 1), an upload in 1.39 s,
+  a fake PNG refused with 400 `invalid_image`.

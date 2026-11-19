@@ -1,19 +1,288 @@
 # PlanktoScan AI
 
-Detects, classifies and counts plankton in microscopy images. Computer Vision end-semester project
-based on SIH25043 (software and AI part).
+Detects, classifies and counts plankton in dark-field microscopy images. A React web app talks to a FastAPI REST
+backend; a command-line tool uses the same analysis service; every analysis is kept in an SQLite history with
+CSV / JSON / HTML / PDF reports. B.Tech Computer Vision project based on
+Smart India Hackathon problem SIH25043 (software and AI part).
 
-**Pipeline:** image → YOLOv8n object detector → crop → preprocessing (illumination correction,
-denoising, CLAHE) → EfficientNet-B0 classifier with confidence → per-class counts (low-confidence items
-flagged **uncertain**, `reject` items listed separately) → annotated image + CSV / HTML / PDF report.
+> **Read the limitations first.** The models were trained on a **freshwater** dataset of single-organism crops
+> (ZooLake). The detector was trained and evaluated only on **synthetic** frames. There are no labelled real
+> microscope frames, so accuracy on real images is **unknown**. See [Limitations](#limitations).
 
-> **Read the limitations first.** The models were trained on a freshwater dataset of single-organism
-> crops. The final classifier is fine-tuned from ImageNet weights and the detector from COCO weights
-> (`yolov8n.pt`); from-scratch runs are kept as ablations.
-> The detector was trained and evaluated only on **synthetic** frames. Results on real
-> microscope images are **not validated**.
+## Problem statement
 
-## Data and important limitations
+Counting and identifying plankton under a microscope is slow manual work, and the counts depend on who does
+the counting. PlanktoScan AI takes a microscopy image and finds every object in it. It names each object
+as one of 7 plankton groups (or rejects it as debris) and counts them. Low-confidence identifications are
+flagged for a human, so they are never silently counted or dropped.
+
+## Features
+
+- **Detection + classification + counting** in one call: YOLOv8n finds objects, EfficientNet-B0 (v2) names them.
+- **Four kinds of count, kept separate everywhere:**
+  - **confirmed**: confident organism predictions only;
+  - **estimated**: every detection under its most likely class, with the part that came from uncertain items shown;
+  - **uncertain**: below the confidence threshold;
+  - **rejected**: debris, skins, unidentifiable objects.
+- **Images:** original, enhanced (illumination correction + denoising + CLAHE; display only) and annotated
+  (`#id class probability`, colour = status).
+- **Per-stage timing** (validation, detection, classification, counting, annotation, enhancement) with CUDA
+  synchronisation, so GPU times are real.
+- **Input validation with typed errors:** missing / corrupted / truncated files, unsupported formats (checked by
+  extension and content), too small (< 32 px), too large (> 50 MB or > 40 MP, checked before decoding).
+  An image with no detections is a successful result with a warning.
+- **Warnings:** no organisms, large image, many uncertain detections (likely out of domain), non-default
+  thresholds, threshold chosen for a different model.
+- **Reports:** CSV, JSON, HTML (self-contained) and PDF, all rendered from one canonical result.
+- **SQLite history** of every analysis, including failures. It stores metadata, counts and file paths
+  (no image data), and each analysis gets its own output folder.
+- **Web app** (React + Vite) on a **REST API** (FastAPI): upload with validation, original / enhanced / annotated views,
+  live detection boxes linked to the detection table, counts, per-stage times, report downloads, history and
+  previous analyses.
+- **CLI** for single images or whole folders. The API and the CLI call the same Python service; no inference code
+  is duplicated.
+
+## System architecture
+
+```
+ frontend/ (React + Vite)          api/ (FastAPI)                   src/ (Python, AI/ML)
+ +----------------------+  REST   +----------------------+        +-----------------------------+
+ | upload + validation  | ------> | POST /api/analyses   |        | service.py AnalysisService  |
+ | specimen frame       |  JSON   | GET  /api/analyses   | -----> |  validate, time, warn       |
+ | counts, detections   | <------ | images, reports      |        |  pipeline/pipeline.py       |
+ | history, downloads   |         | errors as JSON       |        |   YOLOv8n -> crop ->        |
+ +----------------------+         +----------+-----------+        |   EfficientNet-B0 v2        |
+                                             |                    |  pipeline/report.py         |
+ scripts/analyze.py (CLI) -------------------+------------------> |  history.py (SQLite)        |
+                                                                  +-----------------------------+
+```
+
+- Models are loaded **once** per process: the API loads them at start-up (about 20 s with warm-up), the CLI once per run.
+- All inference goes through `AnalysisService` and `Pipeline.run`. The API and the CLI only call the service; a test
+  checks that neither touches the models directly.
+- One analysis runs on the GPU at a time (a lock in the API); uploads are read only up to the size limit.
+- Thresholds come from `results/thresholds.json`. They were chosen on the validation split and are never tuned on test data.
+
+| path | role |
+|---|---|
+| `src/service.py` | `AnalysisService.analyze(path)`, `analyze_bytes(data, name)`; typed errors; `save_outputs` |
+| `src/pipeline/pipeline.py` | detector + classifier, crop, status rule, annotation |
+| `src/pipeline/counting.py` | confirmed counts (`count_detections`) and `estimated_counts` |
+| `src/pipeline/report.py` | the four report formats |
+| `src/history.py` | SQLite history (add / list / get / delete / clear) |
+| `api/main.py` | REST API (FastAPI); also serves the built frontend |
+| `frontend/` | React + Vite web app |
+| `scripts/analyze.py` | CLI |
+
+## AI/ML pipeline
+
+1. **Detection.** YOLOv8n, single class "object", input 640 px, confidence 0.50, NMS IoU 0.75 (both chosen on
+   synthetic VAL frames).
+2. **Crop.** Each box is grown by 10 % (`pad_crop`, the same function used to build the v2 training crops).
+3. **Preprocessing per crop.** Border-median illumination correction, NL-means denoising, CLAHE, then letterbox
+   to 128 px. This is the same `prepare_crop` used in training.
+4. **Classification.** EfficientNet-B0 classifier v2 gives softmax probabilities over 7 organisms + `reject`.
+   Crops are classified in a fixed batch of 32, padded if needed: on the RTX 3050, each *new* batch shape costs
+   cuDNN 6-12 s of set-up. On 300 VAL frames (2,641 detections) the fixed batch changed 0 labels and 0 statuses
+   compared with variable batches (max probability difference 2.9e-3).
+5. **Status.** probability < 0.89 → **uncertain**; else `reject` → **rejected**; else **confirmed** organism.
+   The 0.89 threshold is the smallest one whose accepted VAL predictions reach 99 % accuracy.
+6. **Counts.** Confirmed counts plus `estimated_counts`. Tests check that both always add up to the final
+   box list.
+
+## Model details
+
+| file | model | init | trained on | selected by |
+|---|---|---|---|---|
+| `models/detector_best.pt` | YOLOv8n (3.1 M params) | COCO `yolov8n.pt` | 2,000 synthetic train frames | synthetic VAL mAP (run `20261112_111516_detector_pt`) |
+| `models/classifier_best.pt` = `classifier_v2.pt` | EfficientNet-B0 (4.0 M) | ImageNet `efficientnet_b0.ra_in1k` | 10,146 train crops + 10,146 crops re-cut from synthetic train frames | VAL macro F1 on original + frame crops (run `20261119_235518_cls_v2_frames`) |
+| `models/classifier_v1.pt` | EfficientNet-B0 | ImageNet | 10,146 train crops | kept for comparison only |
+
+SHA-256, sizes, training runs and library versions are in `results/model_manifest.json`, written by
+`python -m scripts.package_models`. Check your copy with `python -m scripts.package_models --check`.
+
+### Model weights
+
+The weights are **not** in git (`models/` is git-ignored, about 39 MB in total). To get them, either:
+- copy `models/` from the release archive or shared drive (check with `python -m scripts.package_models --check`), or
+- retrain them with the commands in [Training from scratch](#training-from-scratch-reproduction).
+
+If the weights are missing, the app and the CLI stop with a `ModelLoadError` that names the missing file.
+
+## Installation
+
+Needs **Python 3.12** and **Node.js 20 or newer** (for the web app; tested with Node 24). From the project root:
+
+```powershell
+# 1. Python backend and AI/ML
+py -3.12 -m venv .venv                 # or: uv venv --python 3.12 .venv
+.venv\Scripts\Activate.ps1             # Linux/macOS: source .venv/bin/activate
+# PyTorch first, from the PyTorch index (pick ONE):
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126   # NVIDIA GPU (CUDA 12.6 build)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu     # CPU only
+pip install -r requirements.txt        # exact versions used: requirements-lock.txt
+python -m scripts.package_models --check
+
+# 2. Web frontend
+cd frontend
+npm ci                                 # exact versions from package-lock.json
+npm run build                          # writes frontend/dist, which the API server serves
+cd ..
+```
+
+### CUDA and CPU
+
+- `project.device: auto` in `config.yaml` uses the GPU when `torch.cuda.is_available()` is true, otherwise the CPU.
+  To force one, set `cuda` or `cpu`.
+- **Check the GPU:** `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`. If it prints
+  `False` on an NVIDIA machine, reinstall the CUDA build of torch that matches your driver (see pytorch.org).
+- **Measured on this project's laptop** (RTX 3050 Laptop 4 GB, Ryzen 7 7435HS), 640 x 640 synthetic VAL frame:
+
+  | | model load + warm-up | detection | classification |
+  |---|---|---|---|
+  | GPU | about 20 s | 20-150 ms | 40-110 ms |
+  | CPU only | about 12 s | 80-110 ms | 175-215 ms |
+
+  The display-only enhanced preview adds about 0.8 s per image on both (NL-means denoising, capped at 800 px).
+
+## Running the application
+
+**One command** (after `npm run build`): the API server also serves the web app.
+
+```powershell
+python -m api                          # http://127.0.0.1:8000  (API reference: /docs)
+python -m api --host 0.0.0.0 --port 8080   # other address or port
+```
+
+**Development** (hot reload), two terminals:
+
+```powershell
+python -m api --reload                 # terminal 1: API on :8000
+cd frontend; npm run dev               # terminal 2: web app on http://localhost:5173, /api proxied to :8000
+```
+
+If port 5173 is taken, Vite picks the next free port and prints it (`Local: http://localhost:5174/`).
+
+The web app has two views:
+- **Analyse:** drop or choose an image (type and size are checked in the browser, then again on the server), or
+  pick an example synthetic VAL frame if `data/synthetic` exists; optional thresholds (empty = the VAL-chosen
+  defaults). The result shows:
+  - the confirmed, estimated, uncertain and rejected counts and the processing time;
+  - the image as original, enhanced or annotated, with the detection boxes drawn live (pointing at a box lights its
+    row in the detection table, and the reverse);
+  - counts by class, every detection with its class probability and detector confidence, per-stage times;
+  - PDF / HTML / CSV / JSON downloads.
+- **History:** every analysis, failed uploads included; open one to see the full result again, re-download its
+  reports or delete it, or clear the history.
+
+Loading, empty and error states are shown everywhere (server offline, models missing, invalid image, empty
+history). Analyses are stored in `results/history/` (git-ignored); set `PLANKTOSCAN_HISTORY_DIR` to use another folder.
+
+### REST API
+
+Every error is `{"error": {"code": ..., "message": ...}}`. Interactive reference: `http://127.0.0.1:8000/docs`.
+
+| method and path | does | answers |
+|---|---|---|
+| `GET /api/health` | liveness, whether the models loaded, device | 200 |
+| `GET /api/info` | default thresholds, accepted formats and limits, classes, model identity | 200, 503 if no models |
+| `GET /api/examples` | synthetic VAL frames offered as examples | 200 |
+| `POST /api/analyses` | analyse a multipart `file` (or `example=<name>`); optional `det_conf`, `uncertainty` | 201 with the result and links |
+| `GET /api/analyses?limit&offset&status` | history, newest first | 200 |
+| `GET /api/analyses/{id}` | one analysis: summary, canonical result, links | 200, 404 |
+| `GET /api/analyses/{id}/images/{original,enhanced,annotated}` | stored image | 200, 404 |
+| `GET /api/analyses/{id}/reports/{csv,json,html,pdf}` | report download | 200, 404 |
+| `DELETE /api/analyses/{id}` | delete one analysis and its files | 204, 404 |
+| `DELETE /api/analyses?confirm=true` | clear the history | 200, 400 without `confirm` |
+
+Error codes and statuses: `invalid_image` 400, `unsupported_format` 415, `image_too_large` 413, `image_too_small` 422,
+`bad_request` 422, `not_found` 404, `inference_error` 500, `model_load_error` 503. A failed analysis is also stored
+in the history. Zero detections is a normal 201 result with the warning "No organisms detected."
+
+## Command-line usage
+
+```powershell
+python -m scripts.analyze path\to\image.jpg --out outputs
+python -m scripts.analyze path\to\folder --out outputs [--recursive] [--formats csv,json,html,pdf]
+                          [--det-conf 0.5] [--uncertainty 0.89] [--no-history] [--history-db file.sqlite]
+```
+
+- **Per image:** a new folder `outputs/<name>_<analysis_id>/` containing `annotated.png`, `enhanced.png`,
+  `report.json`, `report.csv`, `report.html` and `report.pdf`.
+- **Per run:** `outputs/batch_<timestamp>.csv` and `.json`, one row per image (failures included, with the error code).
+- **Failures:** a failed image is logged, and the rest of the folder is still processed.
+- **Exit codes:** `0` all analysed, `1` some failed, `2` nothing could run (bad input path, no images, models missing).
+
+Example console output, from a smoke test on synthetic VAL frames and deliberately broken files:
+
+```
+7 image(s); device cuda; thresholds detection 0.50, uncertainty 0.89; output ...\cli_out
+[1/7] black.png: no_detections, confirmed 0, estimated 0, uncertain 0, rejected 0 (1028 ms)
+[2/7] fake.png: FAILED (invalid_image) fake.png: not a readable image (corrupted or wrong file type).
+[3/7] tiny.png: FAILED (image_too_small) tiny.png: 20x20 px is too small (minimum side 32 px).
+[4/7] truncated.jpg: FAILED (invalid_image) truncated.jpg: the image data is corrupted or truncated.
+[5/7] val_00000.jpg: ok, confirmed 3, estimated 3, uncertain 0, rejected 0 (...)
+...
+done: 4 analysed, 3 failed; summary ...\batch_<timestamp>.csv
+```
+
+Each of the three VAL frames has 3 pasted organisms, and the confirmed counts matched the ground truth class by class.
+
+## Report example
+
+Every format is rendered from `AnalysisResult.to_dict()`, so the numbers are identical across formats (this is tested).
+The CSV has three sections. The example below is the synthetic VAL frame `val_00001.jpg`:
+
+```
+# summary
+field,value
+Image,val_00001.jpg
+Thresholds,"detection 0.50, uncertainty 0.89, NMS IoU 0.75"
+Classifier,classifier_best.pt (run 20261119_235518_cls_v2_frames)
+Processing time,"962 ms total (load_and_validate 4, detection 154, classification 39, counting 0, annotation 1, enhancement_preview 763)"
+
+# counts
+class,confirmed,estimated,estimated_from_uncertain,note
+diatom,2,2,0,
+dinobryon,1,1,0,
+ALL organisms,3,3,0,sum of the rows above
+rejected,0,0,0,debris / skins / unidentifiable; not organisms
+uncertain,0,,,below the confidence threshold; not in confirmed counts
+total detections,3,3,,
+
+# detections
+id,status,label,prob,det_conf,x0,y0,x1,y1
+1,organism,diatom,0.9002,0.919,356.4,63.6,379.0,90.0
+...
+```
+
+(Classes with zero counts are omitted here.) Reports carry the domain disclaimer and every warning. The HTML
+report embeds the annotated and enhanced images; the PDF embeds the annotated image.
+
+## Project layout
+
+```
+config.yaml          paths, classes, seed, hyperparameters, service limits, decisions
+src/service.py       analysis service (validation, errors, timings, canonical result, outputs)
+src/history.py       SQLite analysis history
+src/pipeline/        detect -> crop -> classify -> status; counting; reports
+src/classify/        crops, frame crops (v2), augmentation, EfficientNet training, metrics
+src/detect/          synthetic frame generator, YOLO helpers (offline mode, matching)
+src/preprocess/      illumination correction, denoising, CLAHE
+src/data/            download, inventory, class mapping, dedupe, day-block split, leakage check
+src/common/          config, seeding, experiment logging, stage timing
+src/evaluation.py    bootstrap CIs, count errors, per-frame scoring, figures
+src/deploy/          ONNX export + CPU runtime (embedded feasibility)
+api/                 REST API (FastAPI): python -m api
+frontend/            web app (React + Vite): npm run dev / npm run build; tests in frontend/src/test
+scripts/             entry points (python -m scripts.<name>)
+tests/               pytest (models mocked by tests/fakes.py; the API tested with FastAPI's TestClient)
+docs/viva_notes.md   one-line justification for every design decision
+results/             generated tables, figures, manifests (committed); results/history/ is git-ignored
+data/ models/ runs/  generated, git-ignored
+```
+
+## Dataset
 
 - **Source and license.** ZooLake, Eawag, DOI [10.25678/0004DY](https://doi.org/10.25678/0004DY), from
   Kyathanahally et al. (2021), *Deep Learning Classification of Lake Zooplankton*, Frontiers in
@@ -75,43 +344,16 @@ image (1 row). That leaves **14,043 images**.
   F1 is therefore a weaker estimate than for the other classes.
 - The test split is not looked at until the final evaluation (Phase 8).
 
-## Project layout
-
-```
-config.yaml          all paths, classes, seed, hyperparameters and decisions
-src/common/          config loader, seeding, experiment logging (runs/<timestamp>_<name>/)
-src/data/            download, inventory, class mapping, dedupe, day-block split, leakage check
-src/preprocess/      illumination correction, denoising, CLAHE
-src/classify/        letterbox + cache, GPU augmentation, EfficientNet training, metrics
-src/detect/          synthetic frame generator, YOLO helpers (offline mode, matching)
-src/pipeline/        detect -> crop -> classify -> count; uncertain/reject logic; CSV/HTML/PDF reports
-src/evaluation.py    bootstrap CIs, count errors, figures
-app/                 Streamlit UI
-scripts/             command-line entry points (python -m scripts.<name>)
-tests/               pytest tests
-notebooks/           thin Colab backup notebook
-docs/viva_notes.md   one-line justification for each design decision and ablation
-results/             generated tables and figures (committed, except figures that contain dataset images)
-data/ models/ runs/  generated, git-ignored
-```
-
-## Setup (Windows, Python 3.12)
+## Tests
 
 ```powershell
-cd C:\Users\eswar\planktoscan-ai
-uv venv --python 3.12 .venv            # or: py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126   # check pytorch.org for your driver
-pip install -r requirements.txt        # exact versions used: requirements-lock.txt
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-pytest -q
+pytest -q                              # Python: service, validation, counting, history, reports, CLI, REST API, ML code
+cd frontend; npm test                  # web app: validation, counts, upload, errors, offline, history, delete
 ```
 
-Colab backup: `notebooks/planktoscan_colab.ipynb`. It clones the repo and runs the same scripts.
+## Training from scratch (reproduction)
 
-## Usage
-
-Full reproduction, in order. Every script logs its config, seed, git commit and versions to `runs/`.
+Not needed to use the app. Full reproduction, in order; every script logs its config, seed, git commit and versions to `runs/`.
 
 ```powershell
 python -m scripts.download_zoolake        # 492 MB, SHA-256 verified, safe extract
@@ -141,18 +383,40 @@ python -m scripts.evaluate
 # Optional, after the final evaluation (nothing is tuned by these)
 python -m scripts.benchmark_cpu            # ONNX export + CPU-only latency, fills 'Embedded feasibility'
 python -m scripts.eval_real --images <folder> [--counts counts.csv]   # real-image pilot
-# App
-streamlit run app/streamlit_app.py
+# Backend v2 (Phase A): classifier v2 on original + synthetic-frame crops
+python -m scripts.calibrate_box_jitter   # detector box error on VAL frames -> frame-crop jitter
+python -m scripts.train_classifier --name cls_v2_frames --pretrained 1 --grayscale 0 --weighting none --frame-crops 1
+python -m scripts.select_classifier_v2 --run runs/<timestamp>_cls_v2_frames
+python -m scripts.choose_threshold       # v2 threshold on VAL original + frame crops
+python -m scripts.make_synthetic --fresh-test-seed 2026
+python -m scripts.evaluate_v2 --dry-run-val   # code check on VAL
+python -m scripts.evaluate_v2            # ONE-SHOT v1 vs v2 on fresh test frames (refuses to run twice)
+python -m scripts.package_models         # model manifest with SHA-256
 ```
 
 Resume an interrupted classifier run: `python -m scripts.train_classifier --resume runs/<run_dir>`.
 
-## Results
+## Evaluation results
+
+**Headline numbers (current system: classifier v2, threshold 0.89).** Where each number was measured matters:
+
+| what | number | measured on |
+|---|---|---|
+| classifier macro F1 (8 classes) / accuracy | 0.961 / 0.983 | ZooLake TEST crops (real single-organism crops) |
+| detector mAP@0.5 / mAP@0.5:0.95 | 0.977 / 0.814 | fresh SYNTHETIC test frames |
+| detection F1 (IoU 0.5) | 0.946 | fresh SYNTHETIC test frames |
+| organism count MAE per frame, confirmed / estimated | 0.95 / 0.54 (mean 8.60 organisms per frame) | fresh SYNTHETIC test frames |
+| matched objects flagged uncertain | 8.4 % | fresh SYNTHETIC test frames |
+| any metric on real microscope frames | **not available** | no labelled real frames exist |
+
 
 The classifier is judged by per-class F1 and macro F1, because the classes are imbalanced. All tuning
 (preprocessing, class weighting, epochs, uncertainty threshold, NMS/confidence) used the **validation**
-split only. The test split and the synthetic test frames were used only by `scripts/evaluate.py`.
-The section below is generated by that script; do not edit it by hand.
+split only. The test split and the synthetic test frames were used only by `scripts/evaluate.py`
+(v1) and, once, by `scripts/evaluate_v2.py` (v1 vs v2 on fresh test frames).
+The generated section below is the **v1** evaluation (classifier `cls_pt_rgb`, threshold 0.84, original
+synthetic test frames); a frozen copy of its outputs is in `results/v1/`. The current model is v2: see
+[Classifier v2](#classifier-v2-fixing-undercounting) right after it. Do not edit the generated section by hand.
 
 <!-- RESULTS:START -->
 <!-- generated by scripts/evaluate.py; do not edit by hand -->
@@ -281,7 +545,86 @@ Same objects, classified as crops re-cut from the synthetic frames vs as their o
 | original ZooLake crop   | 2681 |     0.9836 |               0.047  |              0.9902 |            0.9047 |
 <!-- RESULTS:END -->
 
-## Real-image pilot (`scripts/eval_real.py`)
+### Classifier v2: fixing undercounting
+
+**Problem (v1).** On synthetic frames about half of the correctly detected organisms were flagged uncertain, so
+strict counts were far too low (test count MAE 4.81 per frame, mean true 8.91). The cause was a domain gap: the
+classifier was trained on native ZooLake crops but sees crops re-cut from frames.
+
+**Fix.** Classifier v2 (`cls_v2_frames`) uses the same recipe as v1 (ImageNet init, RGB, preprocessing on,
+unweighted, same LR, epochs and seed). The only change is the training data: it adds one crop cut from a
+synthetic frame for every original crop (50/50). The frame crops are cut around the ground-truth box with a
+random box jitter (edge std 0.06 of the side, measured from the detector's real box error on VAL frames,
+`results/box_jitter_val.json`). They use the same `pad_crop` the pipeline uses. Train crops come only from
+train frames and val crops only from val frames; test frames are refused in code.
+- **Selection:** macro F1 on VAL original + frame crops gives v2 0.9454 against v1 0.8377
+  (`results/classifier_selection_v2.json`).
+- **Uncertainty threshold:** re-chosen on the same mixed VAL set with the same 99% rule, giving t = 0.89
+  (v1 keeps 0.84).
+- **v1 is kept** as `models/classifier_v1.pt`.
+
+**Fresh test frames.** The old synthetic test frames had already shown the problem, so they could no longer
+measure the fix fairly. v2 was therefore evaluated on 300 **new** synthetic test frames (generator seed 2026,
+`data/synthetic_test_v2/`, 2,674 objects). They are built from the same test-split crops, because no other
+labelled crops exist. Before the frames were generated, every file in `data/synthetic/` and `results/` was
+hashed; afterwards only new files had appeared.
+`python -m scripts.evaluate_v2` ran **once** (run `20261120_004219_evaluate_v2`) after a dry run on VAL frames,
+and it refuses to run again. Numbers are from `results/v1_vs_v2.{json,md}`. Both models use the same detector
+and are compared at their own VAL-chosen thresholds.
+
+| fresh SYNTHETIC test frames (300) | v1 | v2 |
+|---|---|---|
+| uncertainty threshold (chosen on VAL) | 0.84 | 0.89 |
+| matched objects flagged uncertain | 47.8% | **8.4%** |
+| count MAE per frame, strict (confident organisms only) | 4.43 | **0.95** |
+| signed count error, strict | -4.42 | **-0.78** |
+| count MAE per frame, estimated (argmax, incl. uncertain) | 1.53 | **0.54** |
+| signed count error, estimated | -1.34 | **-0.15** |
+| detection F1 (IoU 0.5; same detector) | 0.946 | 0.946 |
+| accuracy of confident matched items | 0.936 | 0.995 |
+| classifier on TEST split crops: macro F1 / accuracy | 0.962 / 0.984 | 0.961 / 0.983 |
+| classifier on TEST split crops: uncertain fraction | 0.038 | 0.053 |
+
+Mean true organisms per frame: 8.60. Detector on the fresh frames: mAP@0.5 0.977, mAP@0.5:0.95 0.814.
+Per-class count errors: `results/count_errors_test_v2_{v1,v2}_{strict,estimated}.csv`.
+
+- **Strict counts** (`counts`) count only confident organisms; uncertain items are listed separately.
+- **Estimated counts** (`estimated_counts`) put every detection under its classifier argmax and show how many
+  of each class came from uncertain items (`from_uncertain`).
+- **Which to use:** strict is the conservative count; the estimate is the best guess.
+
+**Threshold sensitivity (v2, report only; not used to pick the threshold).** The top softmax is capped near 0.93
+by label smoothing, so the uncertain rate climbs steeply just above the chosen value:
+
+| v2 threshold | matched uncertain | count MAE (strict) | signed error (strict) | test crops uncertain |
+|---|---|---|---|---|
+| 0.85 | 4.3% | 0.71 | -0.47 | 0.026 |
+| **0.89 (chosen on VAL)** | 8.4% | 0.95 | -0.78 | 0.053 |
+| 0.90 | 21.1% | 1.90 | -1.86 | 0.137 |
+
+A 0.01 change in the threshold (0.89 to 0.90) more than doubles the uncertain rate. On new data, expect
+the uncertain rate to be unstable.
+
+**Reject got worse in v2.**
+- **TEST crops:** reject F1 is 0.764 (v1 0.777); the organism classes are unchanged or better.
+- **VAL frame crops:** of 70 true reject objects, v2 confidently calls 9 an organism (rotifer 4, dinobryon 2,
+  nauplius 1, cladoceran 1, diatom 1), against 1 for v1. v2 confidently rejects 18 and flags 43 uncertain;
+  v1 confidently rejected 34 and flagged 35.
+- **Fresh test frames:** v2 confidently rejects 0.12 items per frame against 0.31 true reject objects.
+
+So in frames, v2 lets more debris through as organisms or uncertain. No reject-specific retraining was done.
+
+## Real-image qualitative testing
+
+No real microscope images were available while this was built (`data/real_samples/` does not exist), so **no real-image observations or numbers are reported**. To look at real images qualitatively (detections, counts and times only, no accuracy claims), run the normal CLI on a folder:
+
+```powershell
+python -m scripts.analyze data/real_samples --out results/real_samples_out --no-history
+```
+
+Results on real images must be reported as observations, kept apart from the synthetic-frame metrics above. If manual counts exist for some images, the pilot below compares against them.
+
+### Real-image pilot with manual counts (`scripts/eval_real.py`)
 
 A check of the frozen pipeline on real microscope images, which ZooLake does not provide. It is
 **not used for tuning**: models and thresholds stay exactly as chosen on VAL, and every output is
@@ -313,7 +656,7 @@ python -m scripts.eval_real --images path/to/real_images --counts path/to/counts
 
 ## Embedded feasibility
 
-`python -m scripts.benchmark_cpu`:
+`python -m scripts.benchmark_cpu` (run with classifier v1; v2 has the same architecture and input size, so the latencies apply):
 - exports both final models to ONNX (fp32) and runs them on the **CPU only**, with the GPU hidden;
 - times them on synthetic VAL frames and VAL crops, never test data;
 - checks ONNX outputs against PyTorch and Ultralytics.
@@ -360,32 +703,48 @@ How to read it:
 - Each run writes `config.yaml` and `environment.json` (seed, git commit, library versions, command) to
   `runs/<timestamp>_<name>/`.
 - Single seed per experiment: differences of about 1 macro-F1 point between ablation arms are within noise.
+- The model files are identified by SHA-256 in `results/model_manifest.json`; analysis reports include the classifier run and both model checksums in their metadata.
 
-## Known limitations
-- **Freshwater data, one lake, one camera.** ZooLake comes from Lake Greifensee and the Dual Scripps
-  Plankton Camera (dark field). SIH25043 targets marine plankton. Other microscopes, magnifications,
-  bright-field illumination and marine species are all out of domain.
-- **Domain shift to real microscope images.** No real multi-organism frames with labels exist in
-  ZooLake, so the full pipeline has never been validated on a real microscope image.
-- **Synthetic detector evaluation.** Detector mAP and end-to-end count errors are measured on
-  synthetic frames that we generated ourselves. They are optimistic upper bounds for real images.
-- **Pretrained on natural images.** The final EfficientNet-B0 starts from ImageNet weights
-  (`timm/efficientnet_b0.ra_in1k`) and YOLOv8n from COCO weights (`yolov8n.pt`); URLs, sizes and SHA-256 are in
-  `results/pretrained_weights.json`. Neither source contains plankton. Pretraining raised val macro F1 from
-  0.906 to 0.959; the from-scratch detector run was stopped early, so its comparison is only fair at the common epoch.
-- **Threshold target changed once.** The uncertainty target was 97% accepted accuracy; the pretrained model
-  already reaches 98.2% on val, which made the threshold 0 (nothing flagged), so the target was raised
-  to 99% on VAL before the test split was used.
-- **Crop-to-frame gap (main weakness).** On synthetic frames about half of the detected organisms are
-  flagged uncertain, so per-class counts undercount. The same objects as original ZooLake crops are
-  classified almost perfectly. The classifier is sensitive to the crop's native surroundings, which pasting
-  removes. See the diagnostic table in Results. Fix (not done): also train on frame crops.
-- **Merged classes.** Classes such as `rotifer` (10 genera), `cladoceran` (3) and `diatom` (3) hide
-  within-class variety. `reject` mixes debris, moulted skins and unidentifiable objects, possibly including
-  organism fragments.
-- **Bloom-day diatom issue.** 64% of diatoms come from one bloom day (in train). Diatom test has few
-  images from few days and is mostly *fragilaria*, so its F1 is a weak estimate.
-- **Open set.** Organisms from the 10 excluded classes are not known to the classifier. The
-  uncertainty flag catches only part of them (see Results).
-- **Unclear dataset license** (see Data section).
-- **Single seed** per experiment; no repeated runs.
+## Limitations
+
+- **Synthetic detector data.** The detector was trained on synthetic frames, and all detector and counting
+  numbers (mAP, count MAE) come from synthetic frames we generated ourselves. They are optimistic upper bounds,
+  not real-world performance.
+- **No validated real-world accuracy.** No labelled real multi-organism microscope images were available.
+  Accuracy, precision, recall and mAP on real images are unknown; no real-image numbers are claimed.
+- **Freshwater domain gap.** The data is ZooLake: one lake (Greifensee), one dark-field plankton camera. SIH25043
+  targets marine plankton. Marine species, other microscopes, magnifications and bright-field illumination are
+  out of domain.
+- **Limited classes.** 7 organism groups plus `reject`. Merged groups (`rotifer` covers 10 genera, `cladoceran` 3,
+  `diatom` 3) hide variety. Organisms outside these groups cannot be named; the uncertainty flag catches only part
+  of them (open set: 71.9 % flagged uncertain with v1, 9.9 % wrongly counted as an organism).
+- **Sensitivity to image quality.** Illumination, focus, noise, resolution and magnification all matter.
+  Large images are resized to 640 px for detection, so small organisms may be lost (the service warns above
+  2,560 px).
+- **Fragile threshold.** v2's uncertainty threshold 0.89 sits next to a confidence cliff. On fresh synthetic test
+  frames, raising it to 0.90 moves the uncertain share from 8.4 % to 21.1 %. Expect the uncertain rate to shift
+  on new data.
+- **Reject is weaker in v2.** In frames, v2 more often lets debris through as an organism (9 of 70 VAL reject frame
+  crops, against 1 for v1). Reject test-crop F1 is 0.764 (v1 0.777).
+- **Fresh test frames reuse the test crops.** The v2 test frames are new arrangements of the same test-split crops,
+  which had been used once before to evaluate v1.
+- **Diatom test estimate is weak.** 64 % of diatoms come from one bloom day (in train), so the diatom test F1 rests
+  on few days.
+- **No video, tracking or concentration.** Counts are per image. There is no tracking across frames and no
+  calibration to organisms per litre (that needs the imaged volume).
+- **Single seed** per experiment; differences of about 1 macro-F1 point are within noise.
+- **Dataset licence unclear** (see Dataset). The images are not redistributed.
+
+This tool is a decision aid for plankton images similar to its training data. It is not a universal plankton
+identifier, and its counts are not validated ecological measurements.
+
+## Future improvements
+
+- Label a set of real microscope frames (boxes + classes) and measure detection and counting on them before any
+  real use. Then fine-tune the detector on real frames.
+- Add marine data and classes for the SIH25043 setting.
+- Calibrate confidences (e.g. temperature scaling on VAL) so the uncertainty threshold is not on a cliff.
+- Improve the `reject` class (more debris examples, frame-crop reweighting) and the open-set behaviour.
+- Tiled inference for large images, so small organisms are not lost in the 640 px resize (must be validated on VAL).
+- Calibration to organisms per litre from the imaged volume; video input with tracking to avoid double counts.
+- Quantised ONNX models for edge devices (measured on the actual board).

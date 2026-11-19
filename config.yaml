@@ -12,6 +12,8 @@ paths:                        # relative to the project root
   interim_data: data/interim
   processed_data: data/processed     # leakage-safe split crops (train/val/test)
   synthetic_data: data/synthetic     # generated YOLO frames, per split
+  synthetic_test_v2: data/synthetic_test_v2   # FRESH test frames (new seed) for the v1-vs-v2 evaluation
+  history: results/history      # app analyses + SQLite history (git-ignored)
   models: models
   runs: runs
   results: results
@@ -106,6 +108,15 @@ classifier:
     scale: [0.9, 1.1]
     brightness: 0.15
     contrast: 0.15
+  # v2: also train on crops re-cut from SYNTHETIC frames around ground-truth boxes (per split only).
+  # Enabled per run with --frame-crops 1 (cls_v2_frames); off = the v1 recipe (cls_pt_rgb).
+  frame_crops:
+    enabled: false
+    ratio: 1.0                       # frame crops per original crop: 1.0 -> 50/50 mix (train and val)
+    box_jitter: 0.06                 # edge std as a fraction of box side; measured detector error on VAL
+                                     # frames: pooled std 0.0605 (results/box_jitter_val.json)
+    padding: 0.1                     # same as pipeline.crop_padding (the crop the pipeline will cut)
+    seed_offset: 7                   # rng = project.seed + offset (+1 for val)
 
 uncertainty:
   # Threshold on max softmax probability, chosen on the VAL split only (scripts.choose_threshold):
@@ -151,6 +162,19 @@ detector:
 pipeline:
   crop_padding: 0.1
   min_box_area_px: 16
+  classifier_batch: 32               # inference pads crops to a fixed batch (one cuDNN set-up instead of one per count)
+
+service:
+  # Input validation for src/service.py (app + CLI). Images outside these limits raise a typed error.
+  formats: [.png, .jpg, .jpeg, .tif, .tiff, .bmp]
+  max_file_mb: 50
+  max_megapixels: 40                 # decompression-bomb guard; checked from the header before decoding
+  min_side_px: 32                    # smaller than one typical organism crop (median 72x76 px)
+  large_side_warn_px: 2560           # 4x the detector input (640): small organisms may be lost in the resize
+  enhance_preview_max_side: 800      # the enhanced preview is display-only; larger images are downscaled for it
+                                     # (NL-means took 3.6-8.5 s at 1000-1600 px; detection always uses the original)
+  high_uncertain_warn_fraction: 0.3  # warn when >30% of detections are uncertain (likely out of domain)
+  warmup: true                       # one dummy inference at load, so the first timing is not a CUDA start-up
 
 evaluation:
   bootstrap_resamples: 1000

@@ -85,3 +85,58 @@ One line per decision. Added to as each phase is built.
 - **YOLO decoded and NMS'd in NumPy/OpenCV:** the edge device should not need PyTorch or Ultralytics; parity is checked against Ultralytics boxes at IoU >= 0.9.
 - **Median over 100 different VAL inputs after warm-up, at all threads and at 1 thread:** the median resists OS jitter; 1 thread approximates a small CPU without claiming to be one.
 - **Classifier timed per crop at batch 1, with and without preprocessing:** that is how a small device would run it, and it shows the handcrafted preprocessing is not free: about as costly as the network forward with all threads, about a third of it on one thread.
+
+## Backend v2, Phase A: fixing undercounting (classifier v2)
+- **Train on crops re-cut from synthetic frames:** the diagnostic showed the end-to-end loss is a crop-vs-frame domain gap in the classifier, so the fix is to show the classifier the kind of crop the pipeline will actually give it.
+- **Per-split frame crops only (train frames -> train, val frames -> val), asserted in code; test frames refused:** the leakage rule for the detector frames carries over to classifier data.
+- **Ground-truth box + random jitter, not detector boxes:** GT boxes exist for every object and do not depend on detector errors; the jitter imitates the detector's box error instead.
+- **Jitter std 0.06 of box side, measured on VAL frames (pooled edge std 0.0605):** the augmentation is calibrated to the real detector rather than guessed; the Gaussian covers the heavy tail (90th percentile only 0.041).
+- **Same cropping function in training and inference (`pad_crop`, padding 0.1), tested against the old pipeline code:** a train/inference mismatch is exactly the bug being fixed, so it must not reappear in the crop step.
+- **50/50 mix (one frame crop per original crop) in train and VAL:** keeps the original-crop accuracy while adding the frame domain; val is mixed the same way so selection rewards both.
+- **Same recipe as cls_pt_rgb (ImageNet init, RGB, preprocessing on, unweighted, same LR/epochs/seed):** only the training data changes, so any difference is attributable to the frame crops.
+- **v1 kept as classifier_v1.pt; v2 promoted only if it wins on mixed VAL macro F1:** model choice stays a val-only decision, and v1 stays reproducible.
+- **Threshold for v2 re-chosen on mixed VAL with the same 99% rule; v1 keeps 0.84:** each model is compared at its own val-chosen operating point.
+- **Fresh synthetic test frames with a new seed, evaluated once (script refuses a second run):** the old test frames informed the decision to build v2, so they can no longer give an unbiased v2 number.
+- **`estimated_counts` alongside the strict counts:** strict counts undercount by design (uncertain items are not counted); the estimate puts every item under its argmax class and shows how much of each class came from uncertain items, so nothing is hidden or silently merged.
+- **Success rule fixed before any v2 number was seen on VAL, and checked on a VAL dry run:** the bar could not be moved to fit the result, and the one-shot test run could not fail on a bug.
+- **Dry run repeated after every change to the evaluation script:** a one-shot evaluation must run the exact code that was checked.
+- **Hash lists of `data/synthetic/` and `results/` around the fresh-frame generation:** proves the new frames did not overwrite anything used before.
+- **v1 outputs frozen in `results/v1/`:** the v1 numbers stay traceable after `results/` moves on to v2.
+- **Threshold sensitivity reported, not used for selection:** picking 0.85 because it looks better on test would be tuning on test; the table only shows how fragile 0.89 is.
+- **Reject regression accepted and documented instead of retrained:** reject is not counted, the organism counts improved a lot, and a new run would need yet another fresh test set; the weakness is stated with numbers.
+
+## Application backend, app and packaging (2026-11-20)
+- **One service (`src/service.py`) for the app and the CLI:** inference, validation and counting live in one place, so the two front ends cannot drift apart; the service adds no model logic of its own.
+- **One canonical result (`AnalysisResult.to_dict()`) renders every report:** CSV, JSON, HTML and PDF are views of the same dict, so they cannot disagree on a count (tested).
+- **Confirmed, estimated, uncertain and rejected kept as separate fields everywhere:** merging them would hide exactly the uncertainty the threshold was chosen to expose.
+- **Typed errors with stable codes; zero detections is a success with a warning:** callers can react per error type, and an empty frame is a valid answer, not a failure.
+- **Header-only size check before decoding (PIL), then OpenCV decode:** a decompression bomb is rejected before its pixels are allocated; a decoded size that disagrees with the header means a truncated file.
+- **Content type checked, not only the extension:** a GIF renamed to .png is rejected as unsupported instead of failing somewhere inside the model.
+- **Fixed classifier batch of 32 (padded):** on the RTX 3050 cuDNN spent 6-12 s on every new batch shape, and the batch size is the number of detections; on 300 VAL frames the fixed batch changed 0 labels and 0 statuses (max prob difference 2.9e-3), and was 3x faster overall.
+- **Warm-up of detector AND classifier at load:** a blank frame has no detections, so warming only the detector left the first real image 6 s slow.
+- **CUDA-synchronised stage timers:** GPU work is asynchronous, so unsynchronised timers attribute kernel time to the wrong stage.
+- **Enhanced image is display-only and capped at 800 px:** the detector was trained on unenhanced frames; NL-means on a full large frame took up to 8.5 s for a preview.
+- **SQLite stores metadata and file paths, never images; one connection per call, one transaction per write:** keeps the database small and safe with the API server's worker threads; a failed insert rolls back.
+- **Failures are stored in the history too:** a batch log that silently omits failed images overstates success.
+- **Each analysis writes to a new folder `<name>_<UTC time>-<random>` with `exist_ok=False`:** two analyses can never overwrite each other.
+- **History deletes files only inside its own folder:** a CLI output folder chosen by the user is never removed by a history clean-up.
+- **Ordering by time, then insertion order (rowid):** second-resolution timestamps plus random ids listed same-second analyses in random order (found by a test).
+- **Model manifest with SHA-256 instead of copying weights to a dist/ folder:** identifies the exact models without duplicating 39 MB; `--check` verifies a copy.
+- **History folder redirectable by an environment variable (`PLANKTOSCAN_HISTORY_DIR`):** tests and demos run the real server without writing into the real history.
+- **No real-image numbers:** no real microscope images were available; the README says so instead of showing synthetic results as if they were real.
+
+## Web application: FastAPI backend + React frontend (2026-11-20)
+- **FastAPI over the existing service, no new inference code:** the API only validates the request, calls `AnalysisService`, saves outputs and writes the history, exactly as the CLI does; a test checks that neither imports the models.
+- **One JSON error envelope `{"error": {code, message}}` with an HTTP status per error type:** the frontend shows the server's own message and code, so a user sees why an image was refused, not a generic failure.
+- **Upload read only up to the size limit:** a huge upload is refused without being held in memory.
+- **One analysis at a time on the GPU (a lock), inference in a worker thread:** the event loop stays free for history and downloads while a 4 GB GPU never runs two models at once.
+- **Models load at server start, and a server without models still serves the history (503 only for analysis):** a missing weight file is reported clearly instead of crashing the whole app.
+- **App factory (`create_app`) instead of a module-level app:** importing the API in tests builds nothing and never touches the real history.
+- **The API serves the built frontend:** one command (`python -m api`) runs the whole application; Vite's proxy keeps the same URLs in development.
+- **View state in the URL (`?view=history&analysis=<id>`):** a previous analysis can be linked, reloaded and reached with the back button.
+- **The specimen frame draws the boxes as SVG in image pixel coordinates over the original:** the boxes stay aligned at any size and link to the detection table; the server-annotated image stays as the report version.
+- **Browser validation of type and size before upload, the server validates again:** quick feedback without trusting the client.
+- **Every data region has loading, empty, error and full states:** offline server, missing models, refused image and empty history each say what happened and what to do.
+- **Terrazzo theme (Hallmark deal): ruled specification tables, mono codes, one rust signal:** a lab tool reads like a specimen catalogue; colour is kept for state and focus, never decoration.
+- **Fonts bundled from npm (@fontsource), not loaded from a CDN:** the app works offline in a lab or at a viva.
+- **The earlier prototype UI and its packages were removed:** one frontend to maintain; its reusable parts (analyse once per upload, failures in the history, the history folder override, example frames) moved into the API.

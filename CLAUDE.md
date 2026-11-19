@@ -8,7 +8,7 @@ confidence -> count per class -> annotated image + CSV/HTML/PDF report.
 
 ## Stack
 Python 3.12 (project venv `.venv`), PyTorch, Ultralytics YOLOv8 (n/s), EfficientNet-B0/B2 via timm,
-OpenCV, Streamlit (not FastAPI), reportlab + jinja2 for reports. GPU-optional; the default target is a
+OpenCV, FastAPI REST backend (api/) + React/Vite frontend (frontend/), SQLite history, reportlab + jinja2 for reports. GPU-optional; the default target is a
 local RTX 3050 Laptop (4 GB): mixed precision, small batches. A Colab notebook is the backup.
 
 ## Data decisions (agreed with the user)
@@ -34,7 +34,7 @@ local RTX 3050 Laptop (4 GB): mixed precision, small batches. A Colab notebook i
   - README and results must state that **detector mAP is measured on synthetic frames**.
 
 ## Phases (stop after each one for user review)
-1. Setup  2. Data  3. Preprocess  4. Classifier  5. Detector  6. Pipeline  7. Streamlit app + report
+1. Setup  2. Data  3. Preprocess  4. Classifier  5. Detector  6. Pipeline  7. Web app (FastAPI + React) + report
 8. evaluate.py + final README
 
 ## Rules

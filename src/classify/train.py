@@ -59,6 +59,35 @@ def load_split_arrays(cfg: dict[str, Any], splits: tuple[str, ...], use_preproce
     return out
 
 
+def load_frame_crop_arrays(cfg: dict[str, Any], splits: tuple[str, ...], use_preprocess: bool,
+                           grayscale: bool = False) -> dict:
+    """{split: (uint8 frame crops, labels, metadata)}; n = ratio x the split's original crop count."""
+    assert "test" not in splits, "test frames are never used for classifier training or selection"
+    from src.classify.frame_crops import build_frame_crops
+    fcfg = cfg["classifier"]["frame_crops"]
+    manifest = pd.read_csv(resolve_path(cfg, "processed_data") / "split_manifest.csv")
+    split_of = dict(zip(manifest["path"], manifest["split"]))
+    pcfg = cfg["preprocess"] if use_preprocess else None
+    params = {k: fcfg[k] for k in ("box_jitter", "padding")}
+    out = {}
+    for k, s in enumerate(splits):
+        n = int(round(fcfg["ratio"] * (manifest["split"] == s).sum()))
+        seed = cfg["project"]["seed"] + fcfg["seed_offset"] + (1 if s == "val" else 0)
+        out[s] = build_frame_crops(resolve_path(cfg, "synthetic_data"), s, n, split_of, class_list(cfg),
+                                   cfg["classifier"]["image_size"], pcfg, params, seed, grayscale,
+                                   resolve_path(cfg, "processed_data") / "cache")
+    return out
+
+
+def mixed_val_report(y: np.ndarray, pred: np.ndarray, n_orig: int, classes: list[str], reject: str) -> dict:
+    """Metrics on the mixed VAL set and separately on its original / frame-crop parts."""
+    rep = classification_metrics(y, pred, classes, reject)
+    for name, sl in (("original", slice(0, n_orig)), ("frame", slice(n_orig, None))):
+        r = classification_metrics(y[sl], pred[sl], classes, reject)
+        rep[f"{name}_crops"] = {k: r[k] for k in ("n", "accuracy", "macro_f1", "macro_f1_organisms")}
+    return rep
+
+
 @torch.no_grad()
 def predict_logits(model: nn.Module, x_u8: np.ndarray, device: str, batch: int = 256, amp: bool = True) -> np.ndarray:
     """Logits for a uint8 (N, H, W, 3) array, no augmentation."""
@@ -94,6 +123,14 @@ def train_classifier(cfg: dict[str, Any], name: str, resume: Path | None = None)
     data = load_split_arrays(cfg, ("train", "val"), ccfg["use_preprocess"], gray)   # NO test split here
     x_tr, y_tr, _ = data["train"]
     x_va, y_va, _ = data["val"]
+    use_frames = bool(ccfg.get("frame_crops", {}).get("enabled", False))
+    n_val_orig = len(y_va)
+    if use_frames:                                   # v2: original + frame crops, both for train and VAL selection
+        fr = load_frame_crop_arrays(cfg, ("train", "val"), ccfg["use_preprocess"], gray)
+        x_tr, y_tr = np.concatenate([x_tr, fr["train"][0]]), np.concatenate([y_tr, fr["train"][1]])
+        x_va, y_va = np.concatenate([x_va, fr["val"][0]]), np.concatenate([y_va, fr["val"][1]])
+        print(f"frame crops: train {len(fr['train'][1])} + {len(x_tr) - len(fr['train'][1])} original; "
+              f"val {len(fr['val'][1])} + {n_val_orig} original")
     x_tr_t, y_tr_t = torch.from_numpy(x_tr), torch.from_numpy(y_tr).long()
 
     weights = resolve_path(cfg, "models") / "pretrained" / ccfg["pretrained_weights"] if ccfg["pretrained"] else None
@@ -112,7 +149,8 @@ def train_classifier(cfg: dict[str, Any], name: str, resume: Path | None = None)
     meta = {"backbone": ccfg["backbone"], "classes": classes, "image_size": ccfg["image_size"],
             "use_preprocess": ccfg["use_preprocess"], "grayscale": gray, "pretrained": ccfg["pretrained"],
             "preprocess": cfg["preprocess"] if ccfg["use_preprocess"] else None,
-            "class_weighting": ccfg["class_weighting"], "run": run_dir.name}
+            "class_weighting": ccfg["class_weighting"], "run": run_dir.name,
+            "frame_crops": ccfg["frame_crops"] if use_frames else None}
 
     start_epoch, best_f1, best_epoch, bad = 0, -1.0, -1, 0
     if resume and (run_dir / "last.pt").exists():
@@ -175,13 +213,20 @@ def train_classifier(cfg: dict[str, Any], name: str, resume: Path | None = None)
     ck = torch.load(run_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ck["model"])
     logits = predict_logits(model, x_va, device, amp=use_amp)
-    rep = classification_metrics(y_va, logits.argmax(1), classes, cfg["data"]["reject_class"])
-    rep.update({"split": "val", "best_epoch": best_epoch, "run": run_dir.name,
+    if use_frames:
+        rep = mixed_val_report(y_va, logits.argmax(1), n_val_orig, classes, cfg["data"]["reject_class"])
+    else:
+        rep = classification_metrics(y_va, logits.argmax(1), classes, cfg["data"]["reject_class"])
+    rep.update({"split": "val (original + frame crops)" if use_frames else "val",
+                "uses_frame_crops": use_frames, "best_epoch": best_epoch, "run": run_dir.name,
                 "pretrained": ccfg["pretrained"], "grayscale": gray,
                 "use_preprocess": ccfg["use_preprocess"], "class_weighting": ccfg["class_weighting"],
                 "epochs_budget": ccfg["epochs"]})
     (run_dir / "val_report.json").write_text(json.dumps(rep, indent=2))
     np.save(run_dir / "val_logits.npy", logits)
+    if use_frames:
+        print("  VAL original crops:", {k: round(v, 4) for k, v in rep["original_crops"].items()})
+        print("  VAL frame crops:   ", {k: round(v, 4) for k, v in rep["frame_crops"].items()})
     print(f"best epoch {best_epoch}: val macro F1 {rep['macro_f1']:.4f} "
           f"(organisms {rep['macro_f1_organisms']:.4f}), acc {rep['accuracy']:.4f}")
     return run_dir

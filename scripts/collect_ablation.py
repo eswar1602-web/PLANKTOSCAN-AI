@@ -24,7 +24,7 @@ def collect() -> pd.DataFrame:
         rep = json.loads(rep_path.read_text())
         run_cfg = yaml.safe_load((rep_path.parent / "config.yaml").read_text(encoding="utf-8"))["classifier"]
         name = rep_path.parent.name.split("_", 2)[-1]
-        row = {"run": rep_path.parent.name, "experiment": name,
+        row = {"run": rep_path.parent.name, "experiment": name, "val_set": rep.get("split", "val"),
                "init": "ImageNet" if run_cfg.get("pretrained") else "from scratch",
                "grayscale": bool(run_cfg.get("grayscale", False)),
                "preprocess": rep["use_preprocess"], "class_weighting": rep["class_weighting"],
