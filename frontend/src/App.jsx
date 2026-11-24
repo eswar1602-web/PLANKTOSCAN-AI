@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getHealth, getInfo, listExamples } from './api.js';
+import { getHealth, getInfo, listExamples, setStorage } from './api.js';
 import AnalysisDetail from './components/AnalysisDetail.jsx';
 import AnalyzeView from './components/AnalyzeView.jsx';
 import HistoryView from './components/HistoryView.jsx';
@@ -39,6 +39,7 @@ export default function App() {
     getHealth()
       .then(async (h) => {
         if (!live) return;
+        setStorage(h.storage);
         setHealth(h);
         if (h.models_loaded) {
           const [i, ex] = await Promise.all([getInfo(), listExamples().catch(() => [])]);
@@ -50,6 +51,7 @@ export default function App() {
   }, []);
 
   const ready = Boolean(health?.models_loaded && info);
+  const booted = Boolean(health || bootError);   // the history views need to know where the history is
   const tab = (view, label) => (
     <a
       href={`?view=${view}`}
@@ -106,10 +108,15 @@ export default function App() {
             onOpen={(id) => go('history', id)}
           />
         )}
-        {loc.view === 'history' && !loc.analysis && (
+        {loc.view === 'history' && !booted && (
+          <div className="skeleton skeleton--table" role="status" aria-label="Connecting to the server">
+            {Array.from({ length: 5 }, (_, i) => <span key={i} />)}
+          </div>
+        )}
+        {booted && loc.view === 'history' && !loc.analysis && (
           <HistoryView refreshKey={historyKey} onOpen={(id) => (id ? go('history', id) : go('analyze'))} />
         )}
-        {loc.view === 'history' && loc.analysis && (
+        {booted && loc.view === 'history' && loc.analysis && (
           <AnalysisDetail
             id={loc.analysis}
             onBack={() => go('history')}

@@ -22,10 +22,21 @@ Endpoints (JSON unless noted; every error is {"error": {"code": ..., "message": 
   DELETE /api/analyses/{id}/detections/{n}/correction   remove it (answers with the updated view)
   GET    /api/corrections                         all corrections: totals and model agreement
   GET    /api/corrections/export                  zip: crops per corrected label + manifest (for retraining)
+  POST   /api/reports/{fmt}                       stateless: multipart result (JSON) + annotated [+ enhanced] image
+  POST   /api/review                              stateless: JSON {result, corrections}: validated items + reviewed counts
+
+Storage (PLANKTOSCAN_STORAGE or create_app(storage=...)):
+  server   (default) every analysis, its files and corrections are kept in the server's history.
+  browser  for stateless hosting (several short-lived instances, no shared disk, e.g. Vercel): POST /api/analyses
+           keeps nothing and answers with the result, the annotated and enhanced images (base64) and the review
+           view; the browser stores them and builds reports and corrections with the two stateless endpoints.
+           The history endpoints answer 409 browser_storage. Uploads are capped at BROWSER_MAX_FILE_MB.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import threading
 import time
@@ -43,7 +54,7 @@ from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.common.config import PROJECT_ROOT, load_config, resolve_path
-from src.corrections import export_corrections, reviewed_counts, validate_correction
+from src.corrections import allowed_labels, export_corrections, reviewed_counts, validate_correction
 from src.history import AnalysisHistory
 from src.pipeline.statistics import Calibration
 from src.service import (
@@ -56,11 +67,66 @@ HTTP_STATUS = {"invalid_image": 400, "unsupported_format": 415, "image_too_small
 IMAGE_KINDS = ("original", "enhanced", "annotated")
 REPORT_FORMATS = {"csv": "text/csv", "json": "application/json", "html": "text/html", "pdf": "application/pdf"}
 N_EXAMPLES = 6
+STORAGE_MODES = ("server", "browser")
+BROWSER_MAX_FILE_MB = 4          # Vercel refuses request bodies above 4.5 MB (multipart overhead included)
+RESPONSE_BUDGET = 4_300_000      # ... and response bodies above 4.5 MB: the browser-mode analysis stays below this
+MAX_REPORT_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 class CorrectionIn(BaseModel):
     label: str = Field(min_length=1, max_length=64)
     note: str | None = Field(None, max_length=500)
+
+
+class ReviewItemIn(CorrectionIn):
+    detection_id: int
+
+
+class ReviewIn(BaseModel):
+    result: dict[str, Any]
+    corrections: list[ReviewItemIn] = Field(default_factory=list, max_length=10_000)
+
+
+def encode_image(rgb, fmt: str = ".png", quality: int = 90) -> bytes:
+    import cv2
+    params = [cv2.IMWRITE_JPEG_QUALITY, quality] if fmt == ".jpg" else []
+    ok, enc = cv2.imencode(fmt, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), params)
+    if not ok:
+        raise OSError(f"could not encode an image as {fmt}")
+    return enc.tobytes()
+
+
+def encode_previews(images: dict[str, Any], budget: int) -> dict[str, dict[str, str]]:
+    """{kind: {type, data (base64)}} within `budget` base64 bytes: PNG, else JPEG, else JPEG downscaled.
+
+    Downscaling only ever applies to very large frames (the reports then use the smaller copy).
+    """
+    import cv2
+
+    def build(fmt: str, scale: float) -> dict[str, tuple[str, bytes]]:
+        out = {}
+        for k, rgb in images.items():
+            if scale < 1:
+                rgb = cv2.resize(rgb, (max(1, round(rgb.shape[1] * scale)), max(1, round(rgb.shape[0] * scale))),
+                                 interpolation=cv2.INTER_AREA)
+            out[k] = ("image/png" if fmt == ".png" else "image/jpeg", encode_image(rgb, fmt))
+        return out
+
+    def size(enc: dict[str, tuple[str, bytes]]) -> int:
+        return sum(4 * ((len(b) + 2) // 3) for _, b in enc.values())
+
+    enc = build(".png", 1.0)
+    scale = 1.0
+    if size(enc) > budget:
+        enc = build(".jpg", 1.0)
+    while size(enc) > budget and scale > 0.05:
+        scale *= 0.75
+        enc = build(".jpg", scale)
+    return {k: {"type": t, "data": base64.b64encode(b).decode("ascii")} for k, (t, b) in enc.items()}
+
+
+def review_view(result: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"items": items, "labels": allowed_labels(result), "reviewed_counts": reviewed_counts(result, items)}
 
 
 def error(status: int, code: str, message: str) -> JSONResponse:
@@ -74,9 +140,14 @@ class ApiError(Exception):
 
 
 def create_app(service: Any | None = None, history_root: Path | None = None, cfg: dict | None = None,
-               load_models: bool = True, frontend_dist: Path | None = None) -> FastAPI:
+               load_models: bool = True, frontend_dist: Path | None = None, storage: str | None = None) -> FastAPI:
     """Build the app. Tests pass a fake `service` and a temporary `history_root`."""
     cfg = cfg or load_config()
+    storage = storage or os.environ.get("PLANKTOSCAN_STORAGE") or "server"
+    if storage not in STORAGE_MODES:
+        raise ValueError(f"storage must be one of {STORAGE_MODES}, not {storage!r}")
+    browser = storage == "browser"
+    max_file_mb = min(cfg["service"]["max_file_mb"], BROWSER_MAX_FILE_MB) if browser else cfg["service"]["max_file_mb"]
     root = Path(history_root or os.environ.get("PLANKTOSCAN_HISTORY_DIR") or resolve_path(cfg, "history"))
     history = AnalysisHistory(root / "history.sqlite", managed_root=root)
     example_dir = resolve_path(cfg, "synthetic_data") / "images" / "val"
@@ -116,6 +187,10 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
     async def _http(_: Request, e: StarletteHTTPException):
         return error(e.status_code, "not_found" if e.status_code == 404 else "http_error", str(e.detail))
 
+    def server_history() -> None:
+        if browser:
+            raise ApiError(409, "browser_storage", "This server keeps no history: the app stores analyses in the browser.")
+
     def svc():
         if state["service"] is None:
             raise ApiError(503, "model_load_error", state["model_error"] or "The models are not loaded.")
@@ -146,7 +221,8 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
     def health() -> dict:
         s = state["service"]
         return {"status": "ok" if s is not None else "degraded", "models_loaded": s is not None,
-                "error": state["model_error"], "device": s.model_info["device"] if s is not None else None}
+                "error": state["model_error"], "device": s.model_info["device"] if s is not None else None,
+                "storage": storage}
 
     @app.get("/api/info")
     def info() -> dict:
@@ -154,10 +230,10 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
         sc = cfg["service"]
         from src.pipeline.report import DOMAIN_WARNING
         return {"defaults": s.defaults, "formats": sc["formats"],
-                "limits": {"max_file_mb": sc["max_file_mb"], "max_megapixels": sc["max_megapixels"],
+                "limits": {"max_file_mb": max_file_mb, "max_megapixels": sc["max_megapixels"],
                            "min_side_px": sc["min_side_px"]},
                 "classes": {"organisms": list(s.pipe.organisms), "reject": s.pipe.reject},
-                "models": s.model_info, "disclaimer": DOMAIN_WARNING}
+                "models": s.model_info, "disclaimer": DOMAIN_WARNING, "storage": storage}
 
     @app.get("/api/examples")
     def list_examples() -> list[dict]:
@@ -188,13 +264,14 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
                                           1.0 if concentration_factor is None else concentration_factor)
             except ValueError as e:
                 raise ApiError(422, "bad_request", f"Calibration: {e}.") from e
-        max_bytes = int(cfg["service"]["max_file_mb"] * 1024 * 1024)
+        max_bytes = int(max_file_mb * 1024 * 1024)
         if file is not None and file.filename:
             name = Path(file.filename).name[:200] or "upload"
             data = await file.read(max_bytes + 1)               # never read more than the limit
             if len(data) > max_bytes:
-                e = ImageTooLargeError(f"{name}: the file is above the {cfg['service']['max_file_mb']} MB limit.")
-                history.add_failure(new_analysis_id(), name, e.code, str(e))
+                e = ImageTooLargeError(f"{name}: the file is above the {max_file_mb:g} MB limit.")
+                if not browser:
+                    history.add_failure(new_analysis_id(), name, e.code, str(e))
                 raise e
         elif example:
             p = next((p for p in examples() if p.name == example), None)
@@ -205,6 +282,17 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
             raise InvalidImageError("No image was sent. Attach a file in the 'file' field.")
         settings = AnalysisSettings(det_conf=det_conf, uncertainty=uncertainty, calibration=calibration)
         t0 = time.perf_counter()
+
+        if browser:                                              # nothing is stored: everything goes back
+            def work_browser():
+                with lock:
+                    res = s.analyze_bytes(data, name, settings)
+                canonical = res.to_dict()
+                budget = RESPONSE_BUDGET - len(json.dumps(canonical)) * 2 - 50_000   # result + review view
+                images = encode_previews({"annotated": res.annotated, "enhanced": res.enhanced}, budget)
+                return {"result": canonical, "images": images, "review": review_view(canonical, []),
+                        "storage": storage}
+            return await run_in_threadpool(work_browser)
 
         def work():
             with lock:
@@ -223,11 +311,13 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
     @app.get("/api/analyses")
     def list_analyses(limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
                       status: str | None = Query(None, pattern="^(ok|no_detections|failed)$")) -> dict:
+        server_history()
         return {"items": [summary(r) for r in history.list(limit=limit, offset=offset, status=status)],
                 "total": history.count(), "limit": limit, "offset": offset}
 
     @app.get("/api/analyses/{analysis_id}")
     def get_analysis(analysis_id: str) -> dict:
+        server_history()
         rec = record(analysis_id)
         result = None
         if rec["status"] != "failed" and rec.get("output_dir") and (Path(rec["output_dir"]) / "report.json").is_file():
@@ -244,12 +334,14 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
 
     @app.get("/api/analyses/{analysis_id}/images/{kind}")
     def get_image(analysis_id: str, kind: str):
+        server_history()
         if kind not in IMAGE_KINDS:
             raise ApiError(404, "not_found", f"Unknown image kind {kind!r}; use one of {', '.join(IMAGE_KINDS)}.")
         return FileResponse(stored_file(analysis_id, kind))
 
     @app.get("/api/analyses/{analysis_id}/reports/{fmt}")
     def get_report(analysis_id: str, fmt: str):
+        server_history()
         if fmt not in REPORT_FORMATS:
             raise ApiError(404, "not_found", f"Unknown report format {fmt!r}; use one of {', '.join(REPORT_FORMATS)}.")
         p = stored_file(analysis_id, fmt)
@@ -258,12 +350,14 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
 
     @app.delete("/api/analyses/{analysis_id}", status_code=204)
     def delete_analysis(analysis_id: str) -> Response:
+        server_history()
         if not history.delete(analysis_id):
             raise ApiError(404, "not_found", f"No analysis with id {analysis_id}.")
         return Response(status_code=204)
 
     @app.delete("/api/analyses")
     def clear_analyses(confirm: bool = Query(False)) -> dict:
+        server_history()
         if not confirm:
             raise ApiError(400, "confirmation_required", "Add ?confirm=true to delete the whole history.")
         return {"deleted": history.clear()}
@@ -277,16 +371,16 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
         return load_saved_result(out)
 
     def correction_view(analysis_id: str, result: dict) -> dict:
-        items = history.corrections(analysis_id)
-        from src.corrections import allowed_labels
-        return {"items": items, "labels": allowed_labels(result), "reviewed_counts": reviewed_counts(result, items)}
+        return review_view(result, history.corrections(analysis_id))
 
     @app.get("/api/analyses/{analysis_id}/corrections")
     def get_corrections(analysis_id: str) -> dict:
+        server_history()
         return correction_view(analysis_id, stored_result(analysis_id))
 
     @app.put("/api/analyses/{analysis_id}/detections/{detection_id}/correction")
     def put_correction(analysis_id: str, detection_id: int, body: CorrectionIn) -> dict:
+        server_history()
         result = stored_result(analysis_id)
         note = (body.note or "").strip() or None
         try:
@@ -304,6 +398,7 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
 
     @app.delete("/api/analyses/{analysis_id}/detections/{detection_id}/correction")
     def delete_correction(analysis_id: str, detection_id: int) -> dict:
+        server_history()
         """Remove one correction; answers with the updated view (one round trip, like PUT)."""
         result = stored_result(analysis_id)
         if not history.delete_correction(analysis_id, detection_id):
@@ -312,6 +407,7 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
 
     @app.get("/api/corrections")
     def corrections_summary() -> dict:
+        server_history()
         rows = history.all_corrections()
         by_label: dict[str, int] = {}
         for r in rows:
@@ -321,6 +417,7 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
 
     @app.get("/api/corrections/export")
     def corrections_export():
+        server_history()
         import shutil
         import tempfile
         rows = history.all_corrections()
@@ -335,6 +432,72 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
             raise ApiError(500, "export_error", f"The export failed: {type(e).__name__}: {e}") from e
         return FileResponse(archive, media_type="application/zip", filename="planktoscan_corrections.zip",
                             background=BackgroundTask(shutil.rmtree, tmp, ignore_errors=True))
+
+    # ---------------- stateless: reports and review computed from what the client sends
+    def client_result(value: Any) -> dict:
+        try:
+            r = json.loads(value) if isinstance(value, str) else value
+            if not isinstance(r, dict):
+                raise ValueError
+            r["metadata"]["classes"]["organisms"], r["detections"], r["analysis_id"], r["filename"]   # noqa: B018
+        except (ValueError, KeyError, TypeError) as e:
+            raise ApiError(422, "bad_request", "result: not a PlanktoScan analysis result.") from e
+        return r
+
+    async def client_image(f: UploadFile | None, what: str):
+        if f is None:
+            return None
+        import cv2
+        import numpy as np
+        data = await f.read(MAX_REPORT_IMAGE_BYTES + 1)
+        if len(data) > MAX_REPORT_IMAGE_BYTES:
+            raise ApiError(413, "image_too_large", f"{what}: above {MAX_REPORT_IMAGE_BYTES // 2 ** 20} MB.")
+        bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ApiError(400, "invalid_image", f"{what}: not a readable image.")
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    @app.post("/api/reports/{fmt}")
+    async def build_report(fmt: str, result: str = Form(...), annotated: UploadFile | None = File(None),
+                           enhanced: UploadFile | None = File(None)):
+        if fmt not in REPORT_FORMATS:
+            raise ApiError(404, "not_found", f"Unknown report format {fmt!r}; use one of {', '.join(REPORT_FORMATS)}.")
+        r = client_result(result)
+        ann = await client_image(annotated, "annotated")
+        enh = await client_image(enhanced, "enhanced")
+        if fmt in ("html", "pdf") and ann is None:
+            raise ApiError(422, "bad_request", f"annotated: the {fmt} report needs the annotated image.")
+        from src.pipeline.report import report_csv, report_html, report_json, report_pdf
+        make = {"json": lambda: report_json(r), "csv": lambda: report_csv(r),
+                "html": lambda: report_html(r, ann, enh), "pdf": lambda: report_pdf(r, ann)}[fmt]
+        try:
+            data = await run_in_threadpool(make)
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError) as e:
+            raise ApiError(422, "bad_request",
+                           f"result: the {fmt} report could not be built from it ({type(e).__name__}).") from e
+        name = f"{safe_stem(r['filename'])}_{safe_stem(str(r['analysis_id']))}_planktoscan.{fmt}"
+        return Response(data if isinstance(data, bytes) else data.encode("utf-8"), media_type=REPORT_FORMATS[fmt],
+                        headers={"content-disposition": f'attachment; filename="{name}"'})
+
+    @app.post("/api/review")
+    def review(body: ReviewIn) -> dict:
+        """Validate a whole set of corrections against a result; answers like the correction endpoints."""
+        r = client_result(body.result)
+        items: dict[int, dict] = {}
+        try:
+            for c in body.corrections:
+                note = (c.note or "").strip() or None
+                det = validate_correction(r, c.detection_id, c.label, note)
+                items[det["id"]] = {"detection_id": det["id"], "corrected_label": c.label, "note": note,
+                                    "predicted_label": det["label"], "predicted_status": det["status"],
+                                    "prob": det.get("prob"), "box": det["box"]}
+            return review_view(r, [items[k] for k in sorted(items)])
+        except LookupError as e:
+            raise ApiError(404, "not_found", str(e)) from e
+        except ValueError as e:
+            raise ApiError(422, "bad_request", str(e)) from e
+        except (KeyError, TypeError) as e:
+            raise ApiError(422, "bad_request", "result: not a PlanktoScan analysis result.") from e
 
     # ---------------- the built frontend (production); in development Vite serves it and proxies /api
     if (dist / "index.html").is_file():

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CORRECTIONS_EXPORT_URL, clearHistory, correctionsSummary, listAnalyses } from '../api.js';
+import { CORRECTIONS_EXPORT_URL, browserStorage, clearHistory, correctionsSummary, listAnalyses } from '../api.js';
 import { STATUS_TEXT, seconds, shortName, when } from '../format.js';
 
 const PAGE = 50;
@@ -13,6 +13,7 @@ export default function HistoryView({ onOpen, refreshKey }) {
   const [confirming, setConfirming] = useState(false);
   const [clearError, setClearError] = useState(null);
   const [corrections, setCorrections] = useState(null);
+  const local = browserStorage();
 
   const load = useCallback(async () => {
     setState('loading');
@@ -60,7 +61,7 @@ export default function HistoryView({ onOpen, refreshKey }) {
         <h2 id="history-title">Analysis history</h2>
         {state === 'ready' && total > 0 && (
           <div className="history__actions">
-            {corrections?.total > 0 && !confirming && (
+            {!local && corrections?.total > 0 && !confirming && (
               <a className="btn btn--outline" href={CORRECTIONS_EXPORT_URL} download>
                 {`Export ${corrections.total} ${corrections.total === 1 ? 'correction' : 'corrections'}`}
               </a>
@@ -69,7 +70,7 @@ export default function HistoryView({ onOpen, refreshKey }) {
               <>
                 <span className="help">
                   {`Delete all ${total} analyses and their stored files`}
-                  {corrections?.total > 0 ? `, and ${corrections.total} label ${corrections.total === 1 ? 'correction' : 'corrections'}? Export them first to keep them.` : '?'}
+                  {corrections?.total > 0 ? `, and ${corrections.total} label ${corrections.total === 1 ? 'correction' : 'corrections'}?${local ? '' : ' Export them first to keep them.'}` : '?'}
                 </span>
                 <button type="button" className="btn btn--danger" onClick={clearAll}>Delete all</button>
                 <button type="button" className="btn btn--outline" onClick={() => setConfirming(false)}>Keep them</button>
@@ -80,6 +81,12 @@ export default function HistoryView({ onOpen, refreshKey }) {
           </div>
         )}
       </header>
+      {local && (
+        <p className="note" data-testid="local-history">
+          This history is kept in this browser only: other visitors do not see it, and clearing the browser&apos;s
+          site data removes it. Exporting corrections for retraining is available when the app runs on your own computer.
+        </p>
+      )}
       {clearError && <p className="alert" role="alert">{clearError}</p>}
 
       {state === 'loading' && (

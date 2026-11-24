@@ -1,10 +1,11 @@
-"""Assemble the Hugging Face Space folder: only what the running app needs, nothing else.
+"""Assemble a deployable folder (Hugging Face Space or Vercel): only what the running app needs, nothing else.
 
-    python deploy/huggingface/build_space.py            # -> deploy/huggingface/space/
+    python deploy/huggingface/build_space.py                    # -> deploy/huggingface/space/
+    python deploy/huggingface/build_space.py --target vercel    # -> deploy/vercel/app/
     python deploy/huggingface/build_space.py --no-examples
 
-Build the frontend first (cd frontend && npm run build). The folder is then uploaded with
-huggingface_hub (see the README section "Deployment"). It is git-ignored: it holds the model weights.
+Build the frontend first (cd frontend && npm run build). The folder is then uploaded with huggingface_hub or
+`npx vercel deploy` (see the README section "Deployment"). It is git-ignored: it holds the model weights.
 """
 
 from __future__ import annotations
@@ -27,9 +28,13 @@ def sha256(p: Path) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--out", type=Path, default=HERE / "space")
+    ap.add_argument("--target", choices=["huggingface", "vercel"], default="huggingface")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="default: deploy/huggingface/space or deploy/vercel/app")
     ap.add_argument("--no-examples", action="store_true", help="leave out the synthetic example frames")
     a = ap.parse_args()
+    if a.out is None:
+        a.out = HERE / "space" if a.target == "huggingface" else ROOT / "deploy" / "vercel" / "app"
 
     dist = ROOT / "frontend" / "dist"
     if not (dist / "index.html").is_file():
@@ -39,9 +44,11 @@ def main() -> None:
             raise SystemExit(f"models/{m} is missing.")
 
     out = a.out.resolve()
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+    out.mkdir(parents=True, exist_ok=True)
+    for p in out.iterdir():          # start clean, but keep the Vercel project link (.vercel/)
+        if p.name == ".vercel":
+            continue
+        shutil.rmtree(p) if p.is_dir() else p.unlink()
 
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
     for d in ("api", "src"):
@@ -71,14 +78,20 @@ def main() -> None:
         for p in examples:
             shutil.copy2(p, dst / p.name)
 
-    shutil.copy2(HERE / "Dockerfile", out / "Dockerfile")
     shutil.copy2(HERE / "requirements.txt", out / "requirements.txt")
-    shutil.copy2(HERE / "SPACE_README.md", out / "README.md")
-    (out / ".dockerignore").write_text("__pycache__/\n*.pyc\n.git/\n", encoding="utf-8")
+    if a.target == "huggingface":
+        shutil.copy2(HERE / "Dockerfile", out / "Dockerfile")
+        shutil.copy2(HERE / "SPACE_README.md", out / "README.md")
+    else:
+        shutil.copy2(ROOT / "deploy" / "vercel" / "Dockerfile.vercel", out / "Dockerfile.vercel")
+        # An explicit ignore file, so the repo's .gitignore (which excludes models/ and data/) is never applied.
+        # .env* would hold the CLI's OIDC token: never upload it.
+        (out / ".vercelignore").write_text("__pycache__/\n*.pyc\n.env*\n.vercel/\n", encoding="utf-8")
+    (out / ".dockerignore").write_text("__pycache__/\n*.pyc\n.git/\n.vercel/\n.env*\n", encoding="utf-8")
 
     files = [p for p in out.rglob("*") if p.is_file()]
     size = sum(p.stat().st_size for p in files)
-    print(f"Space folder: {out}")
+    print(f"{a.target} folder: {out}")
     print(f"  {len(files)} files, {size / 1e6:.1f} MB, {len(examples)} example frames")
     for m in MODELS:
         print(f"  models/{m}: {(out / 'models' / m).stat().st_size / 1e6:.1f} MB")

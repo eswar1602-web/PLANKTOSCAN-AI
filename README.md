@@ -219,6 +219,15 @@ Every error is `{"error": {"code": ..., "message": ...}}`. Interactive reference
 | `DELETE /api/analyses/{id}/detections/{n}/correction` | remove one correction | 200 with the updated view, 404 |
 | `GET /api/corrections` | totals over all corrections, agreement with the model | 200 |
 | `GET /api/corrections/export` | zip: `crops/<label>/*.png`, `manifest.csv`, `skipped.csv`, `summary.json` | 200, 404 if none, 500 `export_error` |
+| `POST /api/reports/{csv,json,html,pdf}` | stateless: multipart `result` (the result JSON) + `annotated` (html, pdf) and `enhanced` (html) images | 200 download, 400, 422 |
+| `POST /api/review` | stateless: JSON `{result, corrections: [{detection_id, label, note}]}` | 200 with the correction view, 404, 422 |
+
+**Storage modes.** `PLANKTOSCAN_STORAGE=server` (the default) keeps the history on the server as above.
+`PLANKTOSCAN_STORAGE=browser` is for hosting with several short-lived instances and no shared disk (Vercel):
+`POST /api/analyses` stores nothing and answers with the result, the annotated and enhanced images (base64, kept under
+4.3 MB) and the review view. The web app then keeps the history in the visitor's browser (IndexedDB), and builds reports
+and corrections with the two stateless endpoints. The history endpoints answer `409 browser_storage`, and uploads are
+limited to 4 MB.
 
 Error codes and statuses: `invalid_image` 400, `unsupported_format` 415, `image_too_large` 413, `image_too_small` 422,
 `bad_request` 422, `not_found` 404, `no_result` 409 (correcting a failed analysis), `inference_error` 500,
@@ -227,9 +236,25 @@ in the history. Zero detections is a normal 201 result with the warning "No orga
 
 ## Deployment
 
-The FastAPI server also serves the built React app, so the whole app has a single URL. Two ways to put it online:
+The FastAPI server also serves the built React app, so the whole app has a single URL. Ways to put it online:
 
-**A. Public link from your own PC (free, no account).** A Cloudflare quick tunnel exposes the local server:
+**Vercel (free Hobby plan, always reachable).** The app runs as a container image (`deploy/vercel/Dockerfile.vercel`:
+CPU-only PyTorch, 2 GB, 1 vCPU) in browser-storage mode, because Vercel starts several instances that share no disk.
+
+```
+cd frontend && npm run build && cd ..
+python deploy/huggingface/build_space.py --target vercel     # -> deploy/vercel/app/ (git-ignored: holds the weights)
+cd deploy/vercel/app
+npx vercel login                                              # once
+npx vercel deploy --prod
+```
+
+What this means for visitors: each visitor's history, images and label corrections stay in their own browser (other
+visitors do not see them; clearing the browser's site data removes them). Uploads are limited to 4 MB. Exporting
+corrections for retraining is only available when the app runs on your own computer. After about 5 minutes without
+visitors Vercel stops the app, and the next visit waits for it to start and load the models again.
+
+**Public link from your own PC (free, no account).** A Cloudflare quick tunnel exposes the local server:
 
 ```
 winget install --id Cloudflare.cloudflared      # once; reopen the terminal afterwards
@@ -240,7 +265,7 @@ The script starts the server, waits for the models, and prints a `https://....tr
 only while that window is open and the PC is on, awake and online, and it changes on every run. Anyone with the link can
 use the app and its API (upload, delete history), so do not post it publicly. This uses the PC's GPU if there is one.
 
-**B. Hugging Face Spaces (Docker SDK, always on).** Docker Spaces on CPU now need a Hugging Face PRO subscription
+**Hugging Face Spaces (Docker SDK).** Docker Spaces on CPU now need a Hugging Face PRO subscription
 (creating one on a free account returns `402 Payment Required`), so this was prepared and tested locally on CPU but
 not published. The files are in `deploy/huggingface/`.
 

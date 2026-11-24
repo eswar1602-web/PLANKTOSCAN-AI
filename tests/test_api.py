@@ -32,7 +32,7 @@ def _post(client, data=None, name="frame.png", **form):
 
 def test_health_and_info(client) -> None:
     h = client.get("/api/health").json()
-    assert h == {"status": "ok", "models_loaded": True, "error": None, "device": "cpu"}
+    assert h == {"status": "ok", "models_loaded": True, "error": None, "device": "cpu", "storage": "server"}
     info = client.get("/api/info").json()
     assert set(info["defaults"]) == {"det_conf", "uncertainty", "nms_iou"}
     assert ".png" in info["formats"] and info["limits"]["max_file_mb"] > 0

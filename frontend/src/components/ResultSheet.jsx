@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { saveBlob } from '../api.js';
 import SpecimenFrame from './SpecimenFrame.jsx';
 import useCorrections, { labelText } from '../useCorrections.js';
 import { DET_STATUS_TEXT, STATUS_TEXT, countRange, countRows, rate, seconds, when } from '../format.js';
@@ -9,6 +10,35 @@ const FORMATS = [
   { key: 'csv', label: 'CSV' },
   { key: 'json', label: 'JSON' },
 ];
+
+// A report download: a URL the server serves, or (browser storage) a function that builds the file on demand.
+function Download({ target, label }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  if (typeof target === 'string') {
+    return <a className="btn btn--outline" href={target} download>{label}</a>;
+  }
+  async function run() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { blob, filename } = await target();
+      saveBlob(blob, filename);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <span className="download">
+      <button type="button" className="btn btn--outline" onClick={run} disabled={busy} aria-busy={busy || undefined}>
+        {busy ? `${label}…` : label}
+      </button>
+      {error && <span className="row-error" role="alert">{error}</span>}
+    </span>
+  );
+}
 
 // One analysis as a specification sheet: figures, the specimen frame, counts, detections, downloads.
 export default function ResultSheet({ result, links, actions }) {
@@ -296,9 +326,7 @@ export default function ResultSheet({ result, links, actions }) {
       <section className="sheet__foot">
         <div className="downloads" aria-label="Download reports">
           {FORMATS.filter((f) => links.reports[f.key]).map((f) => (
-            <a key={f.key} className="btn btn--outline" href={links.reports[f.key]} download>
-              {f.label}
-            </a>
+            <Download key={f.key} target={links.reports[f.key]} label={f.label} />
           ))}
         </div>
         <dl className="timings" aria-label="Processing time by stage">

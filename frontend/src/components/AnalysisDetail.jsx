@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { deleteAnalysis, getAnalysis } from '../api.js';
+import { browserStorage, deleteAnalysis, getAnalysis } from '../api.js';
 import { STATUS_TEXT, when } from '../format.js';
 import ResultSheet from './ResultSheet.jsx';
 
@@ -44,7 +44,10 @@ export default function AnalysisDetail({ id, onBack, onDeleted }) {
     <div className="sheet__actions">
       {confirming ? (
         <>
-          <span className="help">Delete this analysis, its files and any label corrections on it? Export corrections from the history first to keep them.</span>
+          <span className="help">
+            Delete this analysis, its files and any label corrections on it?
+            {browserStorage() ? '' : ' Export corrections from the history first to keep them.'}
+          </span>
           <button type="button" className="btn btn--danger" onClick={remove} disabled={busy} aria-busy={busy || undefined}>
             {busy ? 'Deleting…' : 'Delete'}
           </button>

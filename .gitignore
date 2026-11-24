@@ -70,3 +70,6 @@ frontend/.hallmark/
 
 # Assembled Hugging Face Space folder (contains model weights)
 deploy/huggingface/space/
+
+# Assembled Vercel deployment folder (contains model weights)
+deploy/vercel/app/

@@ -1,0 +1,29 @@
+# PlanktoScan AI on Vercel (container image function, free Hobby plan: 2 GB / 1 vCPU).
+# Built by Vercel from the folder that `deploy/huggingface/build_space.py --target vercel` assembles.
+# Instances are short-lived and share no disk, so the app runs in browser-storage mode (see api/main.py):
+# the server keeps nothing, and each visitor's history stays in their own browser.
+FROM python:3.12-slim
+
+# OpenCV needs these shared libraries at import time.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    YOLO_CONFIG_DIR=/tmp/ultralytics \
+    MPLCONFIGDIR=/tmp/matplotlib \
+    PLANKTOSCAN_HISTORY_DIR=/tmp/planktoscan-history \
+    PLANKTOSCAN_STORAGE=browser \
+    OMP_NUM_THREADS=1
+WORKDIR /app
+
+# Separate layers keep each compressed layer under the registry's 500 MB limit.
+RUN pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cpu
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY . .
+
+# Vercel sends traffic to port 80 unless PORT is set in the project settings.
+CMD ["sh", "-c", "exec python -m api --host 0.0.0.0 --port ${PORT:-80}"]
