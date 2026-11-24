@@ -252,7 +252,8 @@ npx vercel deploy --prod
 What this means for visitors: each visitor's history, images and label corrections stay in their own browser (other
 visitors do not see them; clearing the browser's site data removes them). Uploads are limited to 4 MB. Exporting
 corrections for retraining is only available when the app runs on your own computer. After about 5 minutes without
-visitors Vercel stops the app, and the next visit waits for it to start and load the models again.
+visitors Vercel stops the app, and the next visit waits for it to start and load the models again (measured: the
+page took 15 s after 7 idle minutes, then an analysis 4 s).
 
 **Public link from your own PC (free, no account).** A Cloudflare quick tunnel exposes the local server:
 
