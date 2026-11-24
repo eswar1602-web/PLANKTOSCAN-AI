@@ -18,11 +18,15 @@ class Detection:
     prob: float                                     # classifier max softmax probability
     status: str = ORGANISM                          # organism | uncertain | reject
     probs: dict[str, float] = field(default_factory=dict)
+    calibrated_prob: float | None = None            # max probability after temperature scaling (same class)
+    calibrated_probs: dict[str, float] = field(default_factory=dict)
+    ood_score: float | None = None                  # smallest squared Mahalanobis distance to a trained class
+    unknown: bool = False                           # ood_score above the VAL-chosen cut-off: looks untrained
 
     def to_row(self) -> dict:
         d = asdict(self)
         d.update(x0=self.box[0], y0=self.box[1], x1=self.box[2], y1=self.box[3])
-        d.pop("box"); d.pop("probs")
+        d.pop("box"); d.pop("probs"); d.pop("calibrated_probs")
         return d
 
 

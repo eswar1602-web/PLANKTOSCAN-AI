@@ -239,3 +239,72 @@ remove the earlier prototype UI completely. No retraining, no weight changes, no
 - Verified live with the real models (history in the scratchpad): `GET /` 200 (built app), health `ok` on cuda,
   example `val_00001.jpg` analysed in 1.59 s (same counts as the CLI: diatom 2, dinobryon 1), an upload in 1.39 s,
   a fake PNG refused with 400 `invalid_image`.
+
+## Count intervals and concentration (2026-11-22)
+Scope: the first fixes from the limitations list (concentration, confidence intervals on counts). No retraining,
+no weight or threshold changes, no test data used.
+- `src/pipeline/statistics.py`: Poisson-binomial count range from the classifier probabilities; exact Garwood
+  Poisson interval; `Calibration` (imaged volume, or pixel size and depth, plus a concentration factor); per-image
+  and pooled concentration.
+- Service: every result now has `count_intervals`, and `concentration` when a calibration is given, plus a
+  warning below 10 confirmed organisms. API form fields, CLI options (folder runs write
+  `pooled_concentration_<timestamp>.json`), and all four reports carry them. The web app has an optional
+  calibration section, a 95% range column and a concentration table.
+- `scripts/check_count_intervals.py` on 300 synthetic VAL frames: 99.7% of (frame, class) pairs inside the 95%
+  range end to end, 100% for matched detections only; mean width 1.65 (results/count_intervals_val.{json,md}).
+- Tests: pytest 190 passed (27 new in tests/test_statistics.py); Vitest 21 passed (6 new). sloplint on the live
+  app: 0 FAIL, 0 REFLEX, 0 WARN (fixed: hidden calibration body measured as overflow).
+- Live check with the real models: `val_00001.jpg` with 0.002 mL imaged and a factor of 50 gives diatom 2 and
+  dinobryon 1 confirmed (as before); 30,000 organisms per litre, 95% interval 6,190 to 87,700, with the
+  wide-interval warning.
+
+## Calibrated confidence, unknown flag, threshold sensitivity (2026-11-22)
+Scope: Group 1 items 4 (unknown organisms) and 8 (fragile threshold). No retraining, no weight or threshold
+changes, no test data. The open-set crops (an earlier evaluation set) were scored once, after all choices.
+- `src/pipeline/confidence.py`: temperature fit (NLL), ECE, Mahalanobis with Ledoit-Wolf, `ConfidenceModel`.
+  `scripts/fit_confidence.py` writes `models/confidence.npz` (in the model manifest) and results/confidence.{json,md}.
+- Pipeline: one pass gives logits and features (logits identical to before, 0 argmax changes); detections carry
+  `calibrated_prob`, `calibrated_probs`, `ood_score`, `unknown`. The pipeline ignores statistics fitted for
+  another classifier, with a warning.
+- Service: `threshold_sensitivity` (counts at threshold -0.01 / 0 / +0.01, borderline count), `possibly_unknown`
+  counts, two new warnings, calibrated count ranges, `metadata.confidence`. Reports: calibrated and unknown columns,
+  sensitivity, unknown and calibration summary lines. Web app: Calibrated column, "Possibly unknown" tag,
+  sensitivity and unknown notes; long file names shortened in the History table (found by sloplint).
+- Results: T = 0.691, VAL ECE 0.084 to 0.006 (out of fold). Calibrated count ranges: 96.7% coverage, width 0.58.
+  Unknown flag: 0.5% of confirmed known organisms on VAL; open set flagged in some way 73.4% to 84.3%; counted
+  with no flag 6.1% to 5.3%.
+- Live (real models): example frames keep their counts; `val_00001` shows 3 / 3 / 2 confirmed at 0.88 / 0.89 / 0.90.
+  A never-trained chaoborus crop counted as a confirmed copepod (0.905) was flagged possibly unknown.
+- Tests: pytest 204 passed (13 new in tests/test_confidence.py, 1 in test_pipeline_batch.py); Vitest 24 passed.
+  sloplint on the analyse view, history and a stored result: 0 FAIL, 0 REFLEX, 0 WARN.
+
+## Label corrections and INT8 quantization (2026-11-22)
+Scope: the user's request (label correction/feedback, INT8). No retraining, no weight changes, no test data,
+no new packages.
+- `src/corrections.py`: allowed labels (classes + other_organism + not_an_object), validation, reviewed counts,
+  export (one image in memory at a time; per-correction padding; skips images whose size changed).
+- `src/history.py`: `corrections` table (with snapshot: box, prediction, image size, crop padding; columns are
+  added to older history files), upsert, delete, `n_corrections` per analysis, orphan-safe insert, removed with
+  its analysis. The service now records `crop_padding` in each result's metadata.
+- API: GET/PUT/DELETE correction endpoints (PUT and DELETE answer with the updated view), corrections summary,
+  zip export (temporary folder removed on success and failure). CLI: `scripts/export_corrections.py`.
+- Web app: "Your label" select per detection, "Your review" section with reviewed counts, "Reviewed" column and
+  "Export corrections" in History, delete and clear confirmations that mention corrections. Only the latest
+  answer is applied, so a late answer to an older save cannot undo a newer one.
+- INT8: `scripts/quantize_int8.py` (PyTorch FX, oneDNN). Classifier 16.35 to 5.6 MB, but 24.7 to 82.7 ms per crop
+  on 1 thread and VAL macro F1 0.945 to 0.808; the detector cannot be traced. Not deployed (results/int8_quantization.md).
+  onnxruntime and onnx are not installed, and OpenCV 5.0 DNN has no quantizer.
+- Reviewed with two egm reviewer agents (design, technical accuracy). Fixed from their findings:
+  - export memory;
+  - stale-image check;
+  - per-analysis padding;
+  - save race in the browser;
+  - orphan insert;
+  - export failure cleanup and error envelope;
+  - an outdated README line;
+  - a hard-coded INT8 decision, now computed from a stated rule.
+  - Left as documented limits: a box rounded to 0.1 px can shift a crop edge by 1 px, and a same-size
+    replacement of a CLI source image is not detected (no hash is stored at analysis time).
+- Tests: pytest 220 passed (16 new in tests/test_corrections.py); Vitest 28 passed (4 new). sloplint on a
+  reviewed result and History: 0 FAIL, 0 REFLEX, 0 WARN. Live: a correction set, counted, exported as a zip with
+  its crop, then removed again from the real history.

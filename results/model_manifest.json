@@ -1,5 +1,5 @@
 {
-  "created": "2026-11-19T21:38:57+00:00",
+  "created": "2026-11-22T11:37:41+00:00",
   "files": [
     {
       "file": "detector_best.pt",
@@ -73,6 +73,12 @@
       "best_epoch": 29,
       "val_macro_f1": 0.9593,
       "frame_crops": false
+    },
+    {
+      "file": "confidence.npz",
+      "role": "temperature + unknown-flag statistics for the deployed classifier (scripts/fit_confidence.py)",
+      "bytes": 12608442,
+      "sha256": "95474af26484ca26546a6bb78f20425bb1d16bddbe3c2b19559f033a78ebb812"
     }
   ],
   "thresholds": {

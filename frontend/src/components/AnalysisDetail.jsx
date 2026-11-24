@@ -44,7 +44,7 @@ export default function AnalysisDetail({ id, onBack, onDeleted }) {
     <div className="sheet__actions">
       {confirming ? (
         <>
-          <span className="help">Delete this analysis and its files?</span>
+          <span className="help">Delete this analysis, its files and any label corrections on it? Export corrections from the history first to keep them.</span>
           <button type="button" className="btn btn--danger" onClick={remove} disabled={busy} aria-busy={busy || undefined}>
             {busy ? 'Deleting…' : 'Delete'}
           </button>

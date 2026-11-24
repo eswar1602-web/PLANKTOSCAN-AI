@@ -1,0 +1,49 @@
+{
+  "note": "CPU only; PyTorch FX static INT8, oneDNN backend; calibration on TRAIN crops; accuracy on all VAL crops (original + frame crops); latency = median over VAL crops, batch 1",
+  "torch": "2.14.1+cu126",
+  "engine": "onednn",
+  "calibration_crops": 512,
+  "quantize_seconds": 35.5,
+  "val_crops": 4066,
+  "classifier": {
+    "size_mb": {
+      "fp32_checkpoint": 16.35,
+      "int8_torchscript": 5.6
+    },
+    "val_accuracy": {
+      "fp32": 0.9727,
+      "int8": 0.8389
+    },
+    "val_macro_f1": {
+      "fp32": 0.9447,
+      "int8": 0.8083
+    },
+    "argmax_agreement": 0.8463,
+    "status_agreement_at_threshold": 0.4373,
+    "uncertain_share": {
+      "fp32": 0.0888,
+      "int8": 0.6299
+    },
+    "latency_ms": {
+      "all_threads": {
+        "threads": 16,
+        "fp32_ms": 23.57,
+        "int8_ms": 105.67
+      },
+      "1_thread": {
+        "threads": 1,
+        "fp32_ms": 24.71,
+        "int8_ms": 82.72
+      }
+    }
+  },
+  "detector": {
+    "attempted": "torch.ao FX static INT8 (onednn) on the fused YOLOv8n graph",
+    "result": "failed: TraceError: Proxy object cannot be iterated. This can be attempted when the Proxy is used in a loop or as a *args or **kwargs function argument. See the torch.fx docs on pytorch.org for a more detailed explanatio"
+  },
+  "file": "models/int8/classifier_int8.ts",
+  "run": "20261122_180914_quantize_int8",
+  "decision_rule": "deploy INT8 only if it is faster than FP32 at 1 thread, VAL macro F1 drops by at most 0.01, and the detector can be quantized too",
+  "deploy": false,
+  "decision": "not deployed: INT8 is not faster at 1 thread (82.72 vs 24.71 ms); VAL macro F1 drops by 0.136 (> 0.01); the detector could not be quantized with the installed tools"
+}

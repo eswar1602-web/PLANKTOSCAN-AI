@@ -1,0 +1,181 @@
+{
+  "classifier_run": "20261119_235518_cls_v2_frames",
+  "uncertainty_threshold": 0.89,
+  "head_split_check": {
+    "max_abs_logit_diff": 0.0,
+    "argmax_changes": 0,
+    "n": 4066
+  },
+  "temperature": {
+    "temperature": 0.6912,
+    "fold_temperatures": [
+      0.6988,
+      0.6831
+    ],
+    "val_nll_raw": 0.1866,
+    "val_nll_calibrated_out_of_fold": 0.1321,
+    "val_ece_raw": 0.0841,
+    "val_ece_calibrated_out_of_fold": 0.0058,
+    "val_accuracy": 0.9729
+  },
+  "threshold_fragility": {
+    "raw_ceiling_p99": 0.9231,
+    "raw_max": 0.9563,
+    "label_smoothing_ceiling": 0.9125,
+    "share_within_delta_of_threshold_raw": 0.1335,
+    "coverage_raw": [
+      {
+        "threshold": 0.85,
+        "coverage": 0.9567,
+        "accepted_accuracy": 0.9879
+      },
+      {
+        "threshold": 0.86,
+        "coverage": 0.9518,
+        "accepted_accuracy": 0.9889
+      },
+      {
+        "threshold": 0.87,
+        "coverage": 0.9447,
+        "accepted_accuracy": 0.9898
+      },
+      {
+        "threshold": 0.88,
+        "coverage": 0.9338,
+        "accepted_accuracy": 0.99
+      },
+      {
+        "threshold": 0.89,
+        "coverage": 0.911,
+        "accepted_accuracy": 0.9908
+      },
+      {
+        "threshold": 0.9,
+        "coverage": 0.8003,
+        "accepted_accuracy": 0.992
+      },
+      {
+        "threshold": 0.91,
+        "coverage": 0.2678,
+        "accepted_accuracy": 0.9835
+      },
+      {
+        "threshold": 0.92,
+        "coverage": 0.0229,
+        "accepted_accuracy": 0.9247
+      }
+    ],
+    "calibrated_threshold_same_rule": 0.976,
+    "coverage_at_calibrated_threshold": 0.9356,
+    "status_agreement_raw_vs_calibrated_rule": 0.9754
+  },
+  "unknown_flag_val": {
+    "cutoff": 10028.7,
+    "quantile": 0.95,
+    "val_flagged_all": 0.0502,
+    "val_flagged_original_crops": 0.0384,
+    "val_flagged_frame_crops": 0.062,
+    "val_flagged_among_confirmed_organisms": 0.0047,
+    "val_accuracy_of_flagged": 0.6471,
+    "val_accuracy_of_unflagged": 0.9902
+  },
+  "open_set": {
+    "ALL": {
+      "n": 3895,
+      "uncertain": 0.7343,
+      "unknown_flag": 0.7569,
+      "uncertain_or_unknown": 0.8429,
+      "counted_as_organism": 0.0606,
+      "counted_without_any_flag": 0.0526
+    },
+    "ALL excluding maybe_cyano": {
+      "n": 2531,
+      "uncertain": 0.8348,
+      "unknown_flag": 0.8226,
+      "uncertain_or_unknown": 0.8992,
+      "counted_as_organism": 0.0529,
+      "counted_without_any_flag": 0.0415
+    },
+    "aphanizomenon": {
+      "n": 225,
+      "uncertain": 0.8578,
+      "unknown_flag": 0.8711,
+      "uncertain_or_unknown": 0.9244,
+      "counted_as_organism": 0.0267,
+      "counted_without_any_flag": 0.0089
+    },
+    "chaoborus": {
+      "n": 10,
+      "uncertain": 0.9,
+      "unknown_flag": 0.8,
+      "uncertain_or_unknown": 1.0,
+      "counted_as_organism": 0.1,
+      "counted_without_any_flag": 0.0
+    },
+    "filament": {
+      "n": 405,
+      "uncertain": 0.7309,
+      "unknown_flag": 0.7506,
+      "uncertain_or_unknown": 0.8395,
+      "counted_as_organism": 0.1136,
+      "counted_without_any_flag": 0.0938
+    },
+    "fish": {
+      "n": 222,
+      "uncertain": 0.7748,
+      "unknown_flag": 0.8108,
+      "uncertain_or_unknown": 0.8694,
+      "counted_as_organism": 0.0856,
+      "counted_without_any_flag": 0.0405
+    },
+    "hydra": {
+      "n": 18,
+      "uncertain": 0.3889,
+      "unknown_flag": 0.1111,
+      "uncertain_or_unknown": 0.3889,
+      "counted_as_organism": 0.6111,
+      "counted_without_any_flag": 0.6111
+    },
+    "leptodora": {
+      "n": 203,
+      "uncertain": 0.7635,
+      "unknown_flag": 0.5813,
+      "uncertain_or_unknown": 0.7685,
+      "counted_as_organism": 0.1084,
+      "counted_without_any_flag": 0.1034
+    },
+    "maybe_cyano": {
+      "n": 1364,
+      "uncertain": 0.5477,
+      "unknown_flag": 0.6349,
+      "uncertain_or_unknown": 0.7383,
+      "counted_as_organism": 0.0748,
+      "counted_without_any_flag": 0.0733
+    },
+    "paradileptus": {
+      "n": 424,
+      "uncertain": 0.7995,
+      "unknown_flag": 0.934,
+      "uncertain_or_unknown": 0.9623,
+      "counted_as_organism": 0.0307,
+      "counted_without_any_flag": 0.0283
+    },
+    "unknown_plankton": {
+      "n": 71,
+      "uncertain": 0.5775,
+      "unknown_flag": 0.5493,
+      "uncertain_or_unknown": 0.6479,
+      "counted_as_organism": 0.1549,
+      "counted_without_any_flag": 0.1549
+    },
+    "uroglena": {
+      "n": 953,
+      "uncertain": 0.9454,
+      "unknown_flag": 0.8804,
+      "uncertain_or_unknown": 0.9528,
+      "counted_as_organism": 0.0052,
+      "counted_without_any_flag": 0.001
+    }
+  },
+  "run_dir": "runs/20261122_165935_fit_confidence"
+}

@@ -36,12 +36,18 @@ export const getHealth = () => request('/api/health');
 export const getInfo = () => request('/api/info');
 export const listExamples = () => request('/api/examples');
 
-export function analyze({ file, example, detConf, uncertainty }, signal) {
+const CALIBRATION_FIELDS = { volumeMl: 'imaged_volume_ml', pixelUm: 'pixel_size_um', depthUm: 'depth_um', factor: 'concentration_factor' };
+
+export function analyze({ file, example, detConf, uncertainty, calibration }, signal) {
   const form = new FormData();
   if (file) form.append('file', file, file.name);
   else if (example) form.append('example', example);
   if (detConf !== undefined && detConf !== null && detConf !== '') form.append('det_conf', String(detConf));
   if (uncertainty !== undefined && uncertainty !== null && uncertainty !== '') form.append('uncertainty', String(uncertainty));
+  for (const [k, field] of Object.entries(CALIBRATION_FIELDS)) {
+    const v = calibration?.[k];
+    if (v !== undefined && v !== null && v !== '') form.append(field, String(v));
+  }
   return request('/api/analyses', { method: 'POST', body: form, signal });
 }
 
@@ -54,3 +60,13 @@ export function listAnalyses({ limit = 50, offset = 0, status } = {}) {
 export const getAnalysis = (id) => request(`/api/analyses/${encodeURIComponent(id)}`);
 export const deleteAnalysis = (id) => request(`/api/analyses/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const clearHistory = () => request('/api/analyses?confirm=true', { method: 'DELETE' });
+
+// Label corrections (one per detection; see src/corrections.py)
+const detPath = (id, det) => `/api/analyses/${encodeURIComponent(id)}/detections/${det}/correction`;
+export const getCorrections = (id) => request(`/api/analyses/${encodeURIComponent(id)}/corrections`);
+export const putCorrection = (id, det, label, note = null) => request(detPath(id, det), {
+  method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label, note }),
+});
+export const deleteCorrection = (id, det) => request(detPath(id, det), { method: 'DELETE' });
+export const correctionsSummary = () => request('/api/corrections');
+export const CORRECTIONS_EXPORT_URL = '/api/corrections/export';

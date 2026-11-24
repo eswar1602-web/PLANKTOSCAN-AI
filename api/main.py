@@ -8,13 +8,20 @@ Endpoints (JSON unless noted; every error is {"error": {"code": ..., "message": 
   GET    /api/info                                default thresholds, input limits, classes, model identity
   GET    /api/examples                            synthetic VAL frames offered as examples (if generated)
   GET    /api/examples/{name}                     an example image (image/jpeg)
-  POST   /api/analyses                            multipart: file (or example=<name>), det_conf, uncertainty
+  POST   /api/analyses                            multipart: file (or example=<name>), det_conf, uncertainty,
+                                                   optional calibration: imaged_volume_ml | pixel_size_um + depth_um,
+                                                   concentration_factor
   GET    /api/analyses?limit&offset&status        history, newest first
   GET    /api/analyses/{id}                       one analysis: history record + canonical result + links
   GET    /api/analyses/{id}/images/{kind}         original | enhanced | annotated
   GET    /api/analyses/{id}/reports/{fmt}         csv | json | html | pdf (download)
   DELETE /api/analyses/{id}                       remove one analysis and its stored files
   DELETE /api/analyses?confirm=true               clear the history
+  GET    /api/analyses/{id}/corrections           this analysis's label corrections + reviewed counts
+  PUT    /api/analyses/{id}/detections/{n}/correction   JSON {label, note}: set or replace one correction
+  DELETE /api/analyses/{id}/detections/{n}/correction   remove it (answers with the updated view)
+  GET    /api/corrections                         all corrections: totals and model agreement
+  GET    /api/corrections/export                  zip: crops per corrected label + manifest (for retraining)
 """
 
 from __future__ import annotations
@@ -31,10 +38,14 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.common.config import PROJECT_ROOT, load_config, resolve_path
+from src.corrections import export_corrections, reviewed_counts, validate_correction
 from src.history import AnalysisHistory
+from src.pipeline.statistics import Calibration
 from src.service import (
     AnalysisError, AnalysisSettings, ImageTooLargeError, InvalidImageError, ModelLoadError, load_saved_result,
     new_analysis_id, safe_stem, save_outputs,
@@ -45,6 +56,11 @@ HTTP_STATUS = {"invalid_image": 400, "unsupported_format": 415, "image_too_small
 IMAGE_KINDS = ("original", "enhanced", "annotated")
 REPORT_FORMATS = {"csv": "text/csv", "json": "application/json", "html": "text/html", "pdf": "application/pdf"}
 N_EXAMPLES = 6
+
+
+class CorrectionIn(BaseModel):
+    label: str = Field(min_length=1, max_length=64)
+    note: str | None = Field(None, max_length=500)
 
 
 def error(status: int, code: str, message: str) -> JSONResponse:
@@ -122,7 +138,7 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
     def summary(rec: dict) -> dict:
         keys = ("analysis_id", "created_at", "filename", "status", "error_code", "error_message", "n_detections",
                 "confirmed_total", "estimated_total", "uncertain", "rejected", "processing_ms", "det_conf",
-                "uncertainty", "classifier_run")
+                "uncertainty", "classifier_run", "n_corrections")
         return {**{k: rec.get(k) for k in keys}, "links": links(rec["analysis_id"], rec.get("files") or {})}
 
     # ---------------- service information
@@ -159,8 +175,19 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
     @app.post("/api/analyses", status_code=201)
     async def create_analysis(file: UploadFile | None = File(None), example: str | None = Form(None),
                               det_conf: float | None = Form(None, ge=0, le=1),
-                              uncertainty: float | None = Form(None, ge=0, le=1)) -> dict:
+                              uncertainty: float | None = Form(None, ge=0, le=1),
+                              imaged_volume_ml: float | None = Form(None, gt=0),
+                              pixel_size_um: float | None = Form(None, gt=0),
+                              depth_um: float | None = Form(None, gt=0),
+                              concentration_factor: float | None = Form(None, gt=0)) -> dict:
         s = svc()
+        calibration = None
+        if any(v is not None for v in (imaged_volume_ml, pixel_size_um, depth_um, concentration_factor)):
+            try:
+                calibration = Calibration(imaged_volume_ml, pixel_size_um, depth_um,
+                                          1.0 if concentration_factor is None else concentration_factor)
+            except ValueError as e:
+                raise ApiError(422, "bad_request", f"Calibration: {e}.") from e
         max_bytes = int(cfg["service"]["max_file_mb"] * 1024 * 1024)
         if file is not None and file.filename:
             name = Path(file.filename).name[:200] or "upload"
@@ -176,7 +203,7 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
             name, data = p.name, p.read_bytes()
         else:
             raise InvalidImageError("No image was sent. Attach a file in the 'file' field.")
-        settings = AnalysisSettings(det_conf=det_conf, uncertainty=uncertainty)
+        settings = AnalysisSettings(det_conf=det_conf, uncertainty=uncertainty, calibration=calibration)
         t0 = time.perf_counter()
 
         def work():
@@ -240,6 +267,74 @@ def create_app(service: Any | None = None, history_root: Path | None = None, cfg
         if not confirm:
             raise ApiError(400, "confirmation_required", "Add ?confirm=true to delete the whole history.")
         return {"deleted": history.clear()}
+
+    # ---------------- label corrections
+    def stored_result(analysis_id: str) -> dict:
+        rec = record(analysis_id)
+        out = Path(rec["output_dir"]) if rec.get("output_dir") else None
+        if rec["status"] == "failed" or out is None or not (out / "report.json").is_file():
+            raise ApiError(409, "no_result", f"Analysis {analysis_id} has no stored result to correct.")
+        return load_saved_result(out)
+
+    def correction_view(analysis_id: str, result: dict) -> dict:
+        items = history.corrections(analysis_id)
+        from src.corrections import allowed_labels
+        return {"items": items, "labels": allowed_labels(result), "reviewed_counts": reviewed_counts(result, items)}
+
+    @app.get("/api/analyses/{analysis_id}/corrections")
+    def get_corrections(analysis_id: str) -> dict:
+        return correction_view(analysis_id, stored_result(analysis_id))
+
+    @app.put("/api/analyses/{analysis_id}/detections/{detection_id}/correction")
+    def put_correction(analysis_id: str, detection_id: int, body: CorrectionIn) -> dict:
+        result = stored_result(analysis_id)
+        note = (body.note or "").strip() or None
+        try:
+            det = validate_correction(result, detection_id, body.label, note)
+        except LookupError as e:
+            raise ApiError(404, "not_found", str(e)) from e
+        except ValueError as e:
+            raise ApiError(422, "bad_request", str(e)) from e
+        meta = result["metadata"]
+        saved = history.set_correction(analysis_id, det, body.label, note, image=meta.get("image"),
+                                       crop_padding=meta.get("crop_padding"))
+        if saved is None:                                         # deleted while this request ran
+            raise ApiError(404, "not_found", f"No analysis with id {analysis_id}.")
+        return {"correction": saved, **correction_view(analysis_id, result)}
+
+    @app.delete("/api/analyses/{analysis_id}/detections/{detection_id}/correction")
+    def delete_correction(analysis_id: str, detection_id: int) -> dict:
+        """Remove one correction; answers with the updated view (one round trip, like PUT)."""
+        result = stored_result(analysis_id)
+        if not history.delete_correction(analysis_id, detection_id):
+            raise ApiError(404, "not_found", f"Detection {detection_id} of {analysis_id} has no correction.")
+        return correction_view(analysis_id, result)
+
+    @app.get("/api/corrections")
+    def corrections_summary() -> dict:
+        rows = history.all_corrections()
+        by_label: dict[str, int] = {}
+        for r in rows:
+            by_label[r["corrected_label"]] = by_label.get(r["corrected_label"], 0) + 1
+        return {"total": len(rows), "analyses": len({r["analysis_id"] for r in rows}), "by_label": by_label,
+                "agreed_with_model": sum(r["corrected_label"] == r["predicted_label"] for r in rows)}
+
+    @app.get("/api/corrections/export")
+    def corrections_export():
+        import shutil
+        import tempfile
+        rows = history.all_corrections()
+        if not rows:
+            raise ApiError(404, "not_found", "There are no corrections to export yet.")
+        tmp = Path(tempfile.mkdtemp(prefix="planktoscan_corrections_"))
+        try:
+            export_corrections(rows, tmp / "corrections", cfg["pipeline"]["crop_padding"])
+            archive = shutil.make_archive(str(tmp / "planktoscan_corrections"), "zip", tmp / "corrections")
+        except Exception as e:                                    # never leave the temporary folder behind
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise ApiError(500, "export_error", f"The export failed: {type(e).__name__}: {e}") from e
+        return FileResponse(archive, media_type="application/zip", filename="planktoscan_corrections.zip",
+                            background=BackgroundTask(shutil.rmtree, tmp, ignore_errors=True))
 
     # ---------------- the built frontend (production); in development Vite serves it and proxies /api
     if (dist / "index.html").is_file():

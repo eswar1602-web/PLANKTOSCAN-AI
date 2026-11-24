@@ -24,6 +24,20 @@ flagged for a human, so they are never silently counted or dropped.
   - **estimated**: every detection under its most likely class, with the part that came from uncertain items shown;
   - **uncertain**: below the confidence threshold;
   - **rejected**: debris, skins, unidentifiable objects.
+- **95% count range per class:** the class probabilities of all detections give an expected count and an interval
+  (Poisson-binomial). It covers classification uncertainty only, not missed or false detections. On synthetic VAL
+  frames the true count was inside it for 96.7% of (frame, class) pairs with calibrated probabilities (see
+  [Count intervals](#count-intervals-synthetic-val-frames)).
+- **Calibrated confidence:** one temperature (T = 0.69, fitted on VAL) turns the classifier scores into
+  calibrated probabilities (VAL calibration error 0.084 to 0.006, out of fold). They are shown next to the raw
+  score and used for the count ranges. Status still uses the raw score and the VAL-chosen threshold.
+- **Possibly-unknown flag:** a detection whose features are far from every trained class (Mahalanobis distance;
+  cut-off = 95th percentile of known VAL crops) is marked "possibly unknown" with a warning. Counts are not changed.
+- **Threshold sensitivity:** every result shows the confirmed counts at the uncertainty threshold -0.01, at the
+  threshold and at +0.01, plus how many detections lie in that band; a warning appears when over 20% do.
+- **Concentration (optional calibration):** given the volume one image shows (or pixel size and field depth) and
+  how many times the sample was concentrated, the result reports organisms per litre of the original water with
+  an exact 95% Poisson interval. The CLI pools a whole folder of one sample for a narrower interval.
 - **Images:** original, enhanced (illumination correction + denoising + CLAHE; display only) and annotated
   (`#id class probability`, colour = status).
 - **Per-stage timing** (validation, detection, classification, counting, annotation, enhancement) with CUDA
@@ -41,6 +55,10 @@ flagged for a human, so they are never silently counted or dropped.
   previous analyses.
 - **CLI** for single images or whole folders. The API and the CLI call the same Python service; no inference code
   is duplicated.
+- **Label corrections:** in the detection table a person sets the right label per detection (a class, debris,
+  "other organism" or "not an object"). Corrections are stored in the history database, give **reviewed counts**
+  next to the model's counts (which never change), and export as crops per label with a manifest for retraining
+  (web app: History, "Export corrections"; CLI: `python -m scripts.export_corrections --out DIR`).
 
 ## System architecture
 
@@ -172,8 +190,10 @@ The web app has two views:
     row in the detection table, and the reverse);
   - counts by class, every detection with its class probability and detector confidence, per-stage times;
   - PDF / HTML / CSV / JSON downloads.
-- **History:** every analysis, failed uploads included; open one to see the full result again, re-download its
-  reports or delete it, or clear the history.
+- **History:** every analysis, failed uploads included, with how many detections were reviewed; open one to see
+  the full result again, review its detections, re-download its reports or delete it, or clear the history.
+  "Export corrections" downloads a zip of every correction. Deleting an analysis also deletes its corrections;
+  the confirmation says so.
 
 Loading, empty and error states are shown everywhere (server offline, models missing, invalid image, empty
 history). Analyses are stored in `results/history/` (git-ignored); set `PLANKTOSCAN_HISTORY_DIR` to use another folder.
@@ -187,16 +207,22 @@ Every error is `{"error": {"code": ..., "message": ...}}`. Interactive reference
 | `GET /api/health` | liveness, whether the models loaded, device | 200 |
 | `GET /api/info` | default thresholds, accepted formats and limits, classes, model identity | 200, 503 if no models |
 | `GET /api/examples` | synthetic VAL frames offered as examples | 200 |
-| `POST /api/analyses` | analyse a multipart `file` (or `example=<name>`); optional `det_conf`, `uncertainty` | 201 with the result and links |
+| `POST /api/analyses` | analyse a multipart `file` (or `example=<name>`); optional `det_conf`, `uncertainty`; optional calibration `imaged_volume_ml`, or `pixel_size_um` + `depth_um`, and `concentration_factor` | 201 with the result and links |
 | `GET /api/analyses?limit&offset&status` | history, newest first | 200 |
 | `GET /api/analyses/{id}` | one analysis: summary, canonical result, links | 200, 404 |
 | `GET /api/analyses/{id}/images/{original,enhanced,annotated}` | stored image | 200, 404 |
 | `GET /api/analyses/{id}/reports/{csv,json,html,pdf}` | report download | 200, 404 |
 | `DELETE /api/analyses/{id}` | delete one analysis and its files | 204, 404 |
-| `DELETE /api/analyses?confirm=true` | clear the history | 200, 400 without `confirm` |
+| `DELETE /api/analyses?confirm=true` | clear the history (corrections included) | 200, 400 without `confirm` |
+| `GET /api/analyses/{id}/corrections` | the analysis's corrections, allowed labels and reviewed counts | 200, 404, 409 |
+| `PUT /api/analyses/{id}/detections/{n}/correction` | JSON `{label, note}`: set or replace one correction | 200 with the updated view, 404, 409, 422 |
+| `DELETE /api/analyses/{id}/detections/{n}/correction` | remove one correction | 200 with the updated view, 404 |
+| `GET /api/corrections` | totals over all corrections, agreement with the model | 200 |
+| `GET /api/corrections/export` | zip: `crops/<label>/*.png`, `manifest.csv`, `skipped.csv`, `summary.json` | 200, 404 if none, 500 `export_error` |
 
 Error codes and statuses: `invalid_image` 400, `unsupported_format` 415, `image_too_large` 413, `image_too_small` 422,
-`bad_request` 422, `not_found` 404, `inference_error` 500, `model_load_error` 503. A failed analysis is also stored
+`bad_request` 422, `not_found` 404, `no_result` 409 (correcting a failed analysis), `inference_error` 500,
+`export_error` 500, `model_load_error` 503. A failed analysis is also stored
 in the history. Zero detections is a normal 201 result with the warning "No organisms detected."
 
 ## Command-line usage
@@ -205,7 +231,20 @@ in the history. Zero detections is a normal 201 result with the warning "No orga
 python -m scripts.analyze path\to\image.jpg --out outputs
 python -m scripts.analyze path\to\folder --out outputs [--recursive] [--formats csv,json,html,pdf]
                           [--det-conf 0.5] [--uncertainty 0.89] [--no-history] [--history-db file.sqlite]
+                          [--volume-ml 0.002 | --pixel-size-um 1.2 --depth-um 500] [--concentration-factor 50]
 ```
+
+With a calibration, each report has a concentration table, and a folder run also writes
+`pooled_concentration_<timestamp>.json`. That file treats all images in the folder as one sample (summed confirmed
+counts over summed water volume) and prints organisms per litre with a 95% interval.
+
+```powershell
+python -m scripts.export_corrections --out corrections_export   # every label correction in the history
+```
+
+Each crop is cut from the stored original (web uploads) or the CLI's source file, with the padding that analysis
+used. A source file whose size no longer matches the analysed image is skipped and listed in `skipped.csv`, never
+cropped. Boxes are stored to 0.1 px, so a crop edge can differ by 1 px from the pipeline's own cut.
 
 - **Per image:** a new folder `outputs/<name>_<analysis_id>/` containing `annotated.png`, `enhanced.png`,
   `report.json`, `report.csv`, `report.html` and `report.pdf`.
@@ -614,6 +653,58 @@ the uncertain rate to be unstable.
 
 So in frames, v2 lets more debris through as organisms or uncertain. No reject-specific retraining was done.
 
+### Count intervals (synthetic VAL frames)
+`python -m scripts.check_count_intervals` runs the deployed models on the 300 synthetic VAL frames and checks
+whether each frame's true count of each class is inside its 95% range (results/count_intervals_val.md).
+
+| | end to end | classification only (matched detections) |
+|---|---|---|
+| (frame, class) pairs inside the range | 0.997 | 1.000 |
+| frames with every class inside | 0.973 | 0.997 |
+
+These are the raw probabilities: mean width 1.65, and coverage far above 95%, because label smoothing leaves
+about 0.014 on every class, so even absent classes get a range of 0 to 1. With the calibrated probabilities
+(`--probabilities calibrated`, results/count_intervals_val_calibrated.md), which the app uses:
+
+| | end to end | classification only (matched detections) |
+|---|---|---|
+| (frame, class) pairs inside the range | 0.967 | 0.990 |
+| frames with every class inside | 0.767 | 0.940 |
+
+The mean width is 0.58. The rule set before the check was "use calibrated probabilities if end-to-end coverage
+stays at or above 95%". Per class, dinobryon (0.940) and reject (0.950) are lowest; misses there are mostly
+organisms the detector did not find. These are synthetic frames, so coverage on real frames is unknown.
+
+### Confidence calibration and the unknown flag (TRAIN / VAL; open set measured once)
+`python -m scripts.fit_confidence` fits both on TRAIN and VAL crops (original + frame crops) and writes
+`models/confidence.npz`, results/confidence.{json,md}. The weights are unchanged: logits from the split
+feature/head pass equal the old ones exactly (0 argmax changes in 4,066 VAL crops).
+
+- **Temperature 0.691** (folds 0.699 / 0.683). VAL NLL 0.187 to 0.132 and ECE 0.084 to 0.006, out of fold.
+- **Why the threshold is fragile:** label smoothing 0.1 over 8 classes caps a confident softmax near 0.9125.
+  The 99th percentile of raw VAL confidence is 0.923, and 13.4% of VAL crops lie within 0.01 of the threshold 0.89.
+
+| raw threshold | 0.85 | 0.87 | 0.88 | 0.89 | 0.90 | 0.91 |
+|---|---|---|---|---|---|---|
+| VAL coverage (not uncertain) | 0.957 | 0.945 | 0.934 | 0.911 | 0.800 | 0.268 |
+
+  Temperature scaling stretches the scores but keeps them in almost the same order, so it does not remove the
+  pile-up. The same VAL rule on calibrated scores gives threshold 0.976, and it agrees with the current rule on
+  97.5% of VAL crops. The deployed rule was therefore NOT changed (the test results describe it); instead every
+  result reports its counts at +-0.01.
+- **Unknown flag:** cut-off at the 95th percentile of known VAL scores. Flagged among known VAL crops: original
+  3.8%, frame crops 6.2%, confirmed organisms 0.5%. On the 3,895 open-set crops (10 classes never trained on),
+  scored once after every choice was fixed:
+
+| open set | uncertain | unknown flag | uncertain or unknown | counted as organism | counted with no flag at all |
+|---|---|---|---|---|---|
+| all 3,895 | 0.734 | 0.757 | 0.843 | 0.061 | 0.053 |
+| excluding maybe_cyano (2,531) | 0.835 | 0.823 | 0.899 | 0.053 | 0.042 |
+
+  The flag overlaps mostly with "uncertain". It adds 11 points of open-set crops that get some flag, but it
+  lowers silently counted unknowns only from 6.1% to 5.3%. It is weakest for hydra (11% flagged; 61% counted
+  with no flag, n = 18) and unknown_plankton (55%).
+
 ## Real-image qualitative testing
 
 No real microscope images were available while this was built (`data/real_samples/` does not exist), so **no real-image observations or numbers are reported**. To look at real images qualitatively (detections, counts and times only, no accuracy claims), run the normal CLI on a folder:
@@ -688,13 +779,33 @@ ONNX parity: classifier max abs logit difference 1.5e-05, argmax agreement 100% 
 
 How to read it:
 - **Sizes.** The ONNX detector is about twice the size of its `.pt` file because Ultralytics stores fp16
-  weights and the export is fp32. fp16/int8 quantisation was not tried.
+  weights and the export is fp32. INT8 was tried with the tools that are installed (next section); fp16 was not.
 - **Per-frame cost.** It is the detector plus one classifier call per detected object, so it grows with the
   number of organisms in the frame.
 - **Cheapest speed-ups.** Batching the crops (here each crop is classified alone, batch 1, as on a
   small device) and lowering the detector input size. Both would need re-validation on VAL.
 - **What this does not measure.** These are laptop-CPU numbers. Real embedded boards (Raspberry Pi, Jetson)
   were not measured.
+
+### INT8 quantization (`scripts/quantize_int8.py`, results/int8_quantization.md)
+Only PyTorch's FX quantization (oneDNN backend) is available: `onnxruntime` and `onnx` are not installed, no
+downloads were allowed, and OpenCV 5.0 DNN has no quantizer. Static post-training INT8, activations calibrated on
+512 TRAIN crops, compared with FP32 on all 4,066 VAL crops (original + frame crops), CPU only:
+
+| classifier (EfficientNet-B0) | FP32 | INT8 |
+|---|---:|---:|
+| size (MB) | 16.35 | 5.6 |
+| VAL accuracy | 0.973 | 0.839 |
+| VAL macro F1 | 0.945 | 0.808 |
+| VAL uncertain share at 0.89 | 0.089 | 0.630 |
+| latency per crop, 1 thread (ms) | 24.7 | 82.7 |
+
+- **Predicted class:** INT8 agrees with FP32 on 84.6% of crops; on confirmed/uncertain status, on 43.7%.
+- **Detector:** cannot be quantized this way, because torch.fx cannot trace YOLOv8's detection head.
+- **Decision rule:** deploy INT8 only if it is faster at 1 thread, loses at most 0.01 macro F1, and the detector can
+  be quantized too. The rule was written after the first measurement, but the result fails every part of it by a
+  wide margin, so **INT8 is not deployed**.
+- **Separate file:** the INT8 classifier is kept as `models/int8/classifier_int8.ts` and is not used by the app.
 
 ## Reproducibility
 - Fixed seed 42 (`project.seed`) for Python, NumPy, PyTorch, the split and the frame generator; cuDNN
@@ -717,21 +828,30 @@ How to read it:
   out of domain.
 - **Limited classes.** 7 organism groups plus `reject`. Merged groups (`rotifer` covers 10 genera, `cladoceran` 3,
   `diatom` 3) hide variety. Organisms outside these groups cannot be named; the uncertainty flag catches only part
-  of them (open set: 71.9 % flagged uncertain with v1, 9.9 % wrongly counted as an organism).
+  of them (open set: 71.9 % flagged uncertain with v1, 9.9 % wrongly counted as an organism). With v2 plus the
+  possibly-unknown flag, 84.3 % get some flag, but 5.3 % are still counted as an organism with no flag.
 - **Sensitivity to image quality.** Illumination, focus, noise, resolution and magnification all matter.
   Large images are resized to 640 px for detection, so small organisms may be lost (the service warns above
   2,560 px).
-- **Fragile threshold.** v2's uncertainty threshold 0.89 sits next to a confidence cliff. On fresh synthetic test
-  frames, raising it to 0.90 moves the uncertain share from 8.4 % to 21.1 %. Expect the uncertain rate to shift
-  on new data.
+- **Fragile threshold.** v2's uncertainty threshold 0.89 sits next to a confidence cliff, caused by label
+  smoothing capping confident scores near 0.91. On fresh synthetic test frames, raising it to 0.90 moves the
+  uncertain share from 8.4 % to 21.1 %. Calibration does not remove this (it keeps the order of the scores), so
+  the rule is unchanged; each result now shows its counts at +-0.01 and warns when many detections sit in that
+  band. A real fix needs retraining without label smoothing, or a threshold chosen in a sparse region, and then
+  a new evaluation.
 - **Reject is weaker in v2.** In frames, v2 more often lets debris through as an organism (9 of 70 VAL reject frame
   crops, against 1 for v1). Reject test-crop F1 is 0.764 (v1 0.777).
 - **Fresh test frames reuse the test crops.** The v2 test frames are new arrangements of the same test-split crops,
   which had been used once before to evaluate v1.
 - **Diatom test estimate is weak.** 64 % of diatoms come from one bloom day (in train), so the diatom test F1 rests
   on few days.
-- **No video, tracking or concentration.** Counts are per image. There is no tracking across frames and no
-  calibration to organisms per litre (that needs the imaged volume).
+- **No video or tracking.** Counts are per image; there is no tracking across frames.
+- **Concentration is only as good as the calibration and the counts.** Organisms per litre need the user's imaged
+  volume (or pixel size and depth) and concentration factor; none of these are checked. The interval is Poisson
+  sampling error only: it assumes randomly spread organisms and leaves out classification and detection errors.
+  It is computed from confirmed counts, which undercount when many detections are uncertain.
+- **Count ranges assume calibrated probabilities.** On synthetic VAL frames they were conservative (99.7% coverage
+  at a nominal 95%), but they have not been checked on real frames and they ignore missed and false detections.
 - **Single seed** per experiment; differences of about 1 macro-F1 point are within noise.
 - **Dataset licence unclear** (see Dataset). The images are not redistributed.
 
@@ -743,8 +863,11 @@ identifier, and its counts are not validated ecological measurements.
 - Label a set of real microscope frames (boxes + classes) and measure detection and counting on them before any
   real use. Then fine-tune the detector on real frames.
 - Add marine data and classes for the SIH25043 setting.
-- Calibrate confidences (e.g. temperature scaling on VAL) so the uncertainty threshold is not on a cliff.
+- Retrain without label smoothing (or with a confidence-aware loss) and choose the threshold again on VAL, so it
+  does not sit on the confidence ceiling; then evaluate on new test frames.
 - Improve the `reject` class (more debris examples, frame-crop reweighting) and the open-set behaviour.
 - Tiled inference for large images, so small organisms are not lost in the 640 px resize (must be validated on VAL).
-- Calibration to organisms per litre from the imaged volume; video input with tracking to avoid double counts.
-- Quantised ONNX models for edge devices (measured on the actual board).
+- Video input with tracking to avoid double counts.
+- INT8 for edge devices through onnxruntime (static QDQ, calibrated on TRAIN crops, checked on VAL), measured
+  on the actual board. It needs `onnxruntime` and `onnx`, which are not installed. For EfficientNet,
+  quantization-aware training (retraining) may be needed: post-training INT8 in PyTorch lost 0.136 macro F1.

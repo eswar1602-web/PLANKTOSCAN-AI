@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { analyze } from '../api.js';
-import { validThreshold, validateFile } from '../format.js';
+import { calibrationError, validThreshold, validateFile } from '../format.js';
 import ResultSheet from './ResultSheet.jsx';
 
 const SLOW_MS = 2500;
+const CAL_FIELDS = [
+  ['volumeMl', 'cal-vol', 'Imaged volume, mL', 'e.g. 0.002'],
+  ['factor', 'cal-factor', 'Concentration factor', '1'],
+  ['pixelUm', 'cal-px', 'Pixel size, µm', 'e.g. 1.2'],
+  ['depthUm', 'cal-depth', 'Field depth, µm', 'e.g. 500'],
+];
 
 export default function AnalyzeView({ info, examples, ready, onAnalysed, onOpen }) {
   const [file, setFile] = useState(null);
@@ -12,6 +18,7 @@ export default function AnalyzeView({ info, examples, ready, onAnalysed, onOpen 
   const [dragging, setDragging] = useState(false);
   const [detConf, setDetConf] = useState('');
   const [unc, setUnc] = useState('');
+  const [cal, setCal] = useState({ volumeMl: '', pixelUm: '', depthUm: '', factor: '' });
   const [fieldError, setFieldError] = useState(null);
   const [phase, setPhase] = useState('idle'); // idle | busy | error | done
   const [slow, setSlow] = useState(false);
@@ -44,6 +51,8 @@ export default function AnalyzeView({ info, examples, ready, onAnalysed, onOpen 
     e.preventDefault();
     if (!file && !example) { setFieldError('Choose an image or an example first.'); inputRef.current?.focus(); return; }
     if (!validThreshold(detConf) || !validThreshold(unc)) { setFieldError('Thresholds are numbers from 0 to 1.'); return; }
+    const calProblem = calibrationError(cal);
+    if (calProblem) { setFieldError(calProblem); return; }
     setFieldError(null);
     setError(null);
     setPhase('busy');
@@ -51,7 +60,7 @@ export default function AnalyzeView({ info, examples, ready, onAnalysed, onOpen 
     const timer = setTimeout(() => setSlow(true), SLOW_MS);
     abortRef.current = new AbortController();
     try {
-      const body = await analyze({ file, example: file ? null : example, detConf, uncertainty: unc }, abortRef.current.signal);
+      const body = await analyze({ file, example: file ? null : example, detConf, uncertainty: unc, calibration: cal }, abortRef.current.signal);
       setOut(body);
       setPhase('done');
       onAnalysed?.(body.result.analysis_id);
@@ -130,6 +139,25 @@ export default function AnalyzeView({ info, examples, ready, onAnalysed, onOpen 
             <p className="help" id="unc-help">Default {defaults?.uncertainty.toFixed(2)}. Below it a detection is uncertain.</p>
           </div>
         </fieldset>
+
+        <details className="calibration">
+          <summary>Sample calibration, for concentrations</summary>
+          <p className="help">
+            Optional. Give the volume of sample one image shows, or the pixel size and the depth of the
+            field. The result then reports organisms per litre with a 95% interval.
+          </p>
+          <fieldset className="thresholds">
+            <legend className="visually-hidden">Sample calibration</legend>
+            {CAL_FIELDS.map(([k, id, label, ph]) => (
+              <div className="field" key={k}>
+                <label htmlFor={id}>{label}</label>
+                <input id={id} className="input code" type="number" inputMode="decimal" min="0" step="any"
+                  placeholder={ph} value={cal[k]} onChange={(e) => setCal((c) => ({ ...c, [k]: e.target.value }))} />
+              </div>
+            ))}
+          </fieldset>
+          <p className="help">Concentration factor: how many times the sample was concentrated before imaging (1 L to 10 mL is 100).</p>
+        </details>
 
         <p className="help help--form" id="intake-help" aria-live="polite">
           {fieldError || blockedWhy || 'Leave a threshold empty to use its default.'}

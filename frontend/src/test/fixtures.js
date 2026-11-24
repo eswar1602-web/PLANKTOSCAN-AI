@@ -59,3 +59,36 @@ export function mockFetch(routes) {
     return handler(path, opts);
   };
 }
+
+// The same result analysed with a calibration: count intervals and a concentration block.
+const conc = (n, water) => ({ count: n, per_ml: n / water, per_ml_low: 0, per_ml_high: (n + 3) / water,
+  per_l: (1000 * n) / water, per_l_low: 0, per_l_high: (1000 * (n + 3)) / water });
+export const RESULT_CAL = {
+  ...RESULT,
+  count_intervals: {
+    level: 0.95, method: 'Poisson-binomial',
+    per_class: { ...Object.fromEntries(ORGS.map((k) => [k, { expected: 0, low: 0, high: 0 }])),
+      copepod: { expected: 1.02, low: 1, high: 1 }, rotifer: { expected: 0.6, low: 0, high: 1 },
+      reject: { expected: 1, low: 1, high: 1 } },
+  },
+  concentration: {
+    calibration: { imaged_volume_ml: 0.002, concentration_factor: 50 }, imaged_volume_ml: 0.002, water_volume_ml: 0.1,
+    level: 0.95, counts_used: 'confirmed', method: 'Poisson',
+    per_class: Object.fromEntries(ORGS.map((k) => [k, conc(k === 'copepod' ? 1 : 0, 0.1)])),
+    total: conc(1, 0.1),
+  },
+};
+
+// The same result from a pipeline with models/confidence.npz: calibrated probabilities, one possibly-unknown
+// detection, and the threshold sensitivity block.
+export const RESULT_CONF = {
+  ...RESULT,
+  counts: { ...RESULT.counts, possibly_unknown: 1, possibly_unknown_confirmed: 0 },
+  detections: RESULT.detections.map((d, i) => ({ ...d, calibrated_prob: [0.996, 0.61, 0.999][i], unknown: i === 1, ood_score: 9000 })),
+  threshold_sensitivity: {
+    delta: 0.01, borderline: 0,
+    lower: { threshold: 0.88, confirmed_total: 1, confirmed: zero({ copepod: 1 }) },
+    chosen: { threshold: 0.89, confirmed_total: 1, confirmed: zero({ copepod: 1 }) },
+    higher: { threshold: 0.9, confirmed_total: 1, confirmed: zero({ copepod: 1 }) },
+  },
+};

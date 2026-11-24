@@ -24,6 +24,7 @@ ROLES = {
     "classifier_best.pt": "deployed classifier (= classifier_v2.pt)",
     "classifier_v2.pt": "classifier v2: EfficientNet-B0, original + synthetic-frame crops (Phase A)",
     "classifier_v1.pt": "classifier v1: EfficientNet-B0, original crops only (kept for comparison)",
+    "confidence.npz": "temperature + unknown-flag statistics for the deployed classifier (scripts/fit_confidence.py)",
 }
 
 

@@ -1,0 +1,91 @@
+{
+  "level": 0.95,
+  "split": "synthetic VAL frames",
+  "probabilities": "calibrated",
+  "frames": 300,
+  "classifier_run": "20261119_235518_cls_v2_frames",
+  "thresholds": {
+    "det_conf": 0.5,
+    "nms_iou": 0.75,
+    "uncertainty_threshold": 0.89
+  },
+  "overall": {
+    "cells": 2400,
+    "coverage_end_to_end": 0.9671,
+    "coverage_classification_only": 0.9904,
+    "truth_below_interval": 0.0054,
+    "truth_above_interval": 0.0275,
+    "mean_width": 0.579
+  },
+  "frames_with_every_class_covered": {
+    "end_to_end": 0.7667,
+    "classification_only": 0.94
+  },
+  "per_class": {
+    "ceratium": {
+      "cells": 300,
+      "coverage_end_to_end": 0.99,
+      "coverage_classification_only": 1.0,
+      "truth_below_interval": 0.0033,
+      "truth_above_interval": 0.0067,
+      "mean_width": 0.357
+    },
+    "cladoceran": {
+      "cells": 300,
+      "coverage_end_to_end": 0.9667,
+      "coverage_classification_only": 0.9967,
+      "truth_below_interval": 0.0067,
+      "truth_above_interval": 0.0267,
+      "mean_width": 0.593
+    },
+    "copepod": {
+      "cells": 300,
+      "coverage_end_to_end": 0.98,
+      "coverage_classification_only": 1.0,
+      "truth_below_interval": 0.0033,
+      "truth_above_interval": 0.0167,
+      "mean_width": 0.503
+    },
+    "diatom": {
+      "cells": 300,
+      "coverage_end_to_end": 0.9767,
+      "coverage_classification_only": 1.0,
+      "truth_below_interval": 0.0,
+      "truth_above_interval": 0.0233,
+      "mean_width": 0.553
+    },
+    "dinobryon": {
+      "cells": 300,
+      "coverage_end_to_end": 0.94,
+      "coverage_classification_only": 0.9967,
+      "truth_below_interval": 0.0,
+      "truth_above_interval": 0.06,
+      "mean_width": 0.793
+    },
+    "nauplius": {
+      "cells": 300,
+      "coverage_end_to_end": 0.9767,
+      "coverage_classification_only": 0.9833,
+      "truth_below_interval": 0.0067,
+      "truth_above_interval": 0.0167,
+      "mean_width": 0.57
+    },
+    "reject": {
+      "cells": 300,
+      "coverage_end_to_end": 0.95,
+      "coverage_classification_only": 0.96,
+      "truth_below_interval": 0.0167,
+      "truth_above_interval": 0.0333,
+      "mean_width": 0.5
+    },
+    "rotifer": {
+      "cells": 300,
+      "coverage_end_to_end": 0.9567,
+      "coverage_classification_only": 0.9867,
+      "truth_below_interval": 0.0067,
+      "truth_above_interval": 0.0367,
+      "mean_width": 0.76
+    }
+  },
+  "run_dir": "runs/20261122_170314_check_count_intervals_val_calibrated"
+}

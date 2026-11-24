@@ -30,6 +30,7 @@ from src.common.config import load_config, resolve_path
 from src.common.timing import stage
 from src.pipeline.counting import REJECT, UNCERTAIN, Detection, count_detections, estimated_counts
 from src.pipeline.report import DOMAIN_WARNING as DOMAIN_NOTE
+from src.pipeline.statistics import Calibration, classification_intervals, concentration_block
 from src.preprocess.enhance import preprocess
 
 STATUS_OK, STATUS_EMPTY, STATUS_FAILED = "ok", "no_detections", "failed"
@@ -76,9 +77,13 @@ class InferenceError(AnalysisError):
 # ---------------------------------------------------------------- settings / result
 @dataclass
 class AnalysisSettings:
-    """Per-request overrides. None = the VAL-chosen defaults from results/thresholds.json."""
+    """Per-request overrides. None = the VAL-chosen defaults from results/thresholds.json.
+
+    calibration: how much sample the image shows; when given, the result also has concentrations.
+    """
     det_conf: float | None = None
     uncertainty: float | None = None
+    calibration: Calibration | None = None
 
 
 @dataclass
@@ -96,6 +101,9 @@ class AnalysisResult:
     counts: dict[str, Any]
     estimated_counts: dict[str, Any]
     timings_ms: dict[str, float]
+    count_intervals: dict[str, Any] = field(default_factory=dict)
+    sensitivity: dict[str, Any] = field(default_factory=dict)
+    concentration: dict[str, Any] | None = None
     warnings: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -109,6 +117,8 @@ class AnalysisResult:
             "analysis_id": self.analysis_id, "created_at": self.created_at, "filename": self.filename,
             "source_path": self.source_path, "status": self.status, "message": self.message,
             "counts": self.counts, "estimated_counts": self.estimated_counts,
+            "count_intervals": self.count_intervals, "concentration": self.concentration,
+            "threshold_sensitivity": self.sensitivity,
             "detections": [detection_dict(i + 1, d) for i, d in enumerate(self.detections)],
             "timings_ms": {k: round(v, 2) for k, v in self.timings_ms.items()},
             "warnings": list(self.warnings), "metadata": self.metadata,
@@ -117,16 +127,42 @@ class AnalysisResult:
 
 def detection_dict(i: int, d: Detection) -> dict[str, Any]:
     x0, y0, x1, y1 = d.box
-    return {"id": i, "status": d.status, "label": d.label, "prob": round(d.prob, 4), "det_conf": round(d.det_conf, 4),
-            "box": {"x0": round(x0, 1), "y0": round(y0, 1), "x1": round(x1, 1), "y1": round(y1, 1)},
-            "probs": {k: round(v, 4) for k, v in d.probs.items()}}
+    out = {"id": i, "status": d.status, "label": d.label, "prob": round(d.prob, 4), "det_conf": round(d.det_conf, 4),
+           "box": {"x0": round(x0, 1), "y0": round(y0, 1), "x1": round(x1, 1), "y1": round(y1, 1)},
+           "probs": {k: round(v, 4) for k, v in d.probs.items()},
+           "calibrated_prob": None if d.calibrated_prob is None else round(d.calibrated_prob, 4),
+           "unknown": bool(d.unknown), "ood_score": None if d.ood_score is None else round(d.ood_score, 1)}
+    if d.calibrated_probs:
+        out["calibrated_probs"] = {k: round(v, 4) for k, v in d.calibrated_probs.items()}
+    return out
+
+
+def threshold_sensitivity(dets: list[Detection], organisms: list[str], reject: str, threshold: float,
+                          delta: float) -> dict[str, Any]:
+    """Confirmed counts at threshold - delta, threshold and threshold + delta (same detections, same labels).
+
+    Shows how much one image's counts depend on the exact uncertainty threshold, which for v2 sits next to a
+    confidence ceiling. 'borderline' = detections whose probability lies within +-delta of the threshold.
+    """
+    from src.pipeline.counting import assign_status
+    levels = {}
+    for name, t in (("lower", threshold - delta), ("chosen", threshold), ("higher", threshold + delta)):
+        t = min(max(t, 0.0), 1.0)
+        per = {c: 0 for c in organisms}
+        for d in dets:
+            if assign_status(d.label, d.prob, t, reject) == "organism":
+                per[d.label] += 1
+        levels[name] = {"threshold": round(t, 4), "confirmed_total": sum(per.values()), "confirmed": per}
+    return {"delta": delta, **levels, "borderline": sum(abs(d.prob - threshold) <= delta for d in dets)}
 
 
 def structured_counts(dets: list[Detection], organisms: list[str], reject: str) -> tuple[dict, dict]:
     """(confirmed counts, estimated counts) in the canonical nested form, both checked against the box list."""
     s, e = count_detections(dets, organisms), estimated_counts(dets, organisms, reject)
     counts = {"confirmed": {c: s[c] for c in organisms}, "confirmed_total": sum(s[c] for c in organisms),
-              "uncertain": s[UNCERTAIN], "rejected": s[REJECT], "total_detections": len(dets)}
+              "uncertain": s[UNCERTAIN], "rejected": s[REJECT], "total_detections": len(dets),
+              "possibly_unknown": sum(d.unknown for d in dets),
+              "possibly_unknown_confirmed": sum(d.unknown and d.status == "organism" for d in dets)}
     est = {"per_class": {c: e[c] for c in organisms}, "organisms_total": sum(e[c] for c in organisms),
            "reject": e[reject], "from_uncertain": e["from_uncertain"], "total": e["total"]}
     assert counts["confirmed_total"] + counts["uncertain"] + counts["rejected"] == len(dets)
@@ -238,6 +274,8 @@ class AnalysisService:
         self.load_ms = (time.perf_counter() - t0) * 1000
         self.model_info = self._model_info()
         self.load_warnings = self._threshold_check()
+        if getattr(self.pipe, "confidence_warning", None):
+            self.load_warnings.append(self.pipe.confidence_warning)
         if (self.scfg.get("warmup", True) if warmup is None else warmup):
             try:   # detector AND classifier: a blank frame has no detections, so classify a dummy crop too
                 self.pipe.run(np.zeros((self.cfg["detector"]["image_size"],) * 2 + (3,), np.uint8))
@@ -255,6 +293,16 @@ class AnalysisService:
             if p.is_file():
                 info[key]["sha256"] = file_sha256(p)
         return info
+
+    @property
+    def confidence_info(self) -> dict[str, Any] | None:
+        cm = getattr(self.pipe, "confidence", None)
+        if cm is None:
+            return None
+        return {"temperature": round(cm.temperature, 4), "ood_cutoff": round(cm.ood_threshold, 1),
+                "ood_known_quantile": cm.info.get("ood_known_quantile"), "fitted": cm.info.get("fitted"),
+                "note": "status uses the raw probability and the VAL-chosen threshold; calibrated probabilities "
+                        "and the unknown flag are additional information"}
 
     def _threshold_check(self) -> list[str]:
         """Warn if results/thresholds.json was chosen for a different classifier than the one loaded."""
@@ -309,6 +357,13 @@ class AnalysisService:
             raise InferenceError(f"{filename}: model inference failed ({msg}).") from e
         with stage(timings, "counting", device):
             counts, est = structured_counts(dets, list(self.pipe.organisms), self.pipe.reject)
+            calibrated = bool(dets) and all(d.calibrated_probs for d in dets)
+            intervals = classification_intervals(dets, list(self.pipe.organisms) + [self.pipe.reject],
+                                                 calibrated=calibrated)
+            ucfg = self.cfg["uncertainty"]
+            sens = threshold_sensitivity(dets, list(self.pipe.organisms), self.pipe.reject, unc,
+                                         ucfg.get("sensitivity_delta", 0.01))
+            conc = None if settings.calibration is None else                 concentration_block(counts["confirmed"], settings.calibration, img.shape[1], img.shape[0])
         with stage(timings, "annotation", device):
             annotated = annotate(img, dets)
         with stage(timings, "enhancement_preview", device):
@@ -331,11 +386,25 @@ class AnalysisService:
             warnings.append(f"Non-default thresholds (detection {det_conf:.2f}, uncertainty {unc:.2f}; defaults "
                             f"{d['det_conf']:.2f} / {d['uncertainty']:.2f}): counts are not comparable "
                             "with the reported evaluation.")
+        if counts["possibly_unknown"]:
+            warnings.append(f"{counts['possibly_unknown']} of {len(dets)} detections look unlike every trained class "
+                            f"(possibly unknown organisms; in the confirmed counts: "
+                            f"{counts['possibly_unknown_confirmed']}). Check them by eye.")
+        if dets and sens["borderline"] >= 2 and sens["borderline"] / len(dets) > ucfg.get("borderline_warn_fraction", 0.2):
+            lo, hi = sens["lower"], sens["higher"]
+            warnings.append(f"{sens['borderline']} detections are within {sens['delta']:.2f} of the uncertainty threshold: "
+                            f"confirmed organisms would be {lo['confirmed_total']} at {lo['threshold']:.2f} and "
+                            f"{hi['confirmed_total']} at {hi['threshold']:.2f}.")
+        if conc is not None and counts["confirmed_total"] < 10:
+            warnings.append(f"Only {counts['confirmed_total']} confirmed organisms: the concentration interval is wide. "
+                            "Analyse several images of the same sample and pool them for a usable estimate.")
         meta = {"image": {"width": w, "height": h},
                 "thresholds": {"det_conf": det_conf, "uncertainty": unc, "nms_iou": d["nms_iou"],
                                "defaults": {"det_conf": d["det_conf"], "uncertainty": d["uncertainty"]}},
                 "classes": {"organisms": list(self.pipe.organisms), "reject": self.pipe.reject},
+                "crop_padding": self.cfg["pipeline"]["crop_padding"],   # how the classified crops were cut
                 "models": self.model_info,
+                "confidence": self.confidence_info,
                 "enhanced_preview": {"width": enhanced.shape[1], "height": enhanced.shape[0],
                                      "note": "display only; detection uses the original image"},
                 "disclaimer": DOMAIN_NOTE}
@@ -343,6 +412,7 @@ class AnalysisService:
             analysis_id=new_analysis_id(), created_at=datetime.now(timezone.utc).isoformat(timespec="microseconds"),
             filename=filename, source_path=source_path, status=status, original=img, enhanced=enhanced,
             annotated=annotated, detections=dets, counts=counts, estimated_counts=est, timings_ms=timings,
+            count_intervals=intervals, concentration=conc, sensitivity=sens,
             warnings=warnings, metadata=meta)
 
 

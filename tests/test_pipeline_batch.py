@@ -12,7 +12,9 @@ from src.pipeline.pipeline import Pipeline
 
 
 class TinyNet(nn.Module):
-    """Per-sample model (no batch coupling) that records every input batch size."""
+    """Per-sample model (no batch coupling) with timm's feature/head split; records every input batch size."""
+
+    num_features = 3
 
     def __init__(self, n_classes: int = 8):
         super().__init__()
@@ -20,9 +22,19 @@ class TinyNet(nn.Module):
         self.fc = nn.Linear(3, n_classes)
         self.batch_sizes: list[int] = []
 
-    def forward(self, x):
+    def forward_features(self, x):
         self.batch_sizes.append(x.shape[0])
-        return self.fc(x.mean(dim=(2, 3)))
+        return x
+
+    def forward_head(self, x, pre_logits: bool = False):
+        f = x.mean(dim=(2, 3))
+        return f if pre_logits else self.fc(f)
+
+    def get_classifier(self):
+        return self.fc
+
+    def forward(self, x):
+        return self.forward_head(self.forward_features(x))
 
 
 def _pipe(batch: int) -> Pipeline:
@@ -54,6 +66,16 @@ def test_fixed_batch_gives_same_probs_and_one_shape() -> None:
 
 def test_empty_crop_list() -> None:
     assert _pipe(8).classify([]).shape == (0, 8)
+    logits, feats = _pipe(8).classify_full([])
+    assert logits.shape == (0, 8) and feats.shape == (0, 3)
+
+
+def test_features_and_logits_come_from_one_pass() -> None:
+    p = _pipe(8)
+    logits, feats = p.classify_full(_crops(5))
+    assert feats.shape == (5, 3)
+    assert np.allclose(logits, p.classifier.fc(torch.from_numpy(feats)).detach().numpy(), atol=1e-5)
+    assert np.allclose(torch.softmax(torch.from_numpy(logits), 1).numpy(), p.classify(_crops(5)), atol=1e-6)
 
 
 def test_stage_timer_accumulates_and_none_is_noop() -> None:

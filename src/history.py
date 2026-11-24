@@ -40,7 +40,26 @@ CREATE TABLE IF NOT EXISTS analyses (
     files_json       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_analyses_created ON analyses (created_at);
+CREATE TABLE IF NOT EXISTS corrections (
+    analysis_id      TEXT NOT NULL,
+    detection_id     INTEGER NOT NULL,
+    predicted_label  TEXT NOT NULL,
+    predicted_status TEXT NOT NULL,
+    prob             REAL,
+    corrected_label  TEXT NOT NULL,
+    note             TEXT,
+    box_json         TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    image_width      INTEGER,                -- size of the analysed image, checked again at export
+    image_height     INTEGER,
+    crop_padding     REAL,                   -- the padding the pipeline used for this analysis
+    PRIMARY KEY (analysis_id, detection_id)
+);
 """
+# columns added after the first release of the corrections table (ALTER TABLE on older history files)
+CORRECTION_COLUMNS_ADDED = {"image_width": "INTEGER", "image_height": "INTEGER", "crop_padding": "REAL"}
+N_CORR = "(SELECT COUNT(*) FROM corrections c WHERE c.analysis_id = analyses.analysis_id) AS n_corrections"
 
 
 class AnalysisHistory:
@@ -52,6 +71,10 @@ class AnalysisHistory:
         self.managed_root = Path(managed_root).resolve() if managed_root else None
         with closing(self._connect()) as con, con:
             con.executescript(SCHEMA)
+            have = {r[1] for r in con.execute("PRAGMA table_info(corrections)")}
+            for col, typ in CORRECTION_COLUMNS_ADDED.items():
+                if col not in have:
+                    con.execute(f"ALTER TABLE corrections ADD COLUMN {col} {typ}")
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=10)
@@ -94,6 +117,7 @@ class AnalysisHistory:
             return False
         with closing(self._connect()) as con, con:
             con.execute("DELETE FROM analyses WHERE analysis_id = ?", (analysis_id,))
+            con.execute("DELETE FROM corrections WHERE analysis_id = ?", (analysis_id,))
         if delete_files:
             self._remove_managed(rec.get("output_dir"))
         return True
@@ -103,6 +127,7 @@ class AnalysisHistory:
         recs = self.list(limit=None)
         with closing(self._connect()) as con, con:
             con.execute("DELETE FROM analyses")
+            con.execute("DELETE FROM corrections")
         if delete_files:
             for r in recs:
                 self._remove_managed(r.get("output_dir"))
@@ -125,12 +150,12 @@ class AnalysisHistory:
 
     def get(self, analysis_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as con:
-            row = con.execute("SELECT * FROM analyses WHERE analysis_id = ?", (analysis_id,)).fetchone()
+            row = con.execute(f"SELECT *, {N_CORR} FROM analyses WHERE analysis_id = ?", (analysis_id,)).fetchone()
         return self._decode(row) if row else None
 
     def list(self, limit: int | None = 100, offset: int = 0, status: str | None = None) -> list[dict[str, Any]]:
         """Newest first."""
-        q, args = "SELECT * FROM analyses", []
+        q, args = f"SELECT *, {N_CORR} FROM analyses", []
         if status:
             q += " WHERE status = ?"
             args.append(status)
@@ -144,3 +169,62 @@ class AnalysisHistory:
     def count(self) -> int:
         with closing(self._connect()) as con:
             return int(con.execute("SELECT COUNT(*) FROM analyses").fetchone()[0])
+
+    # ---------------- corrections (src/corrections.py validates them against the stored result)
+    @staticmethod
+    def _correction(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["box"] = json.loads(d.pop("box_json"))
+        return d
+
+    def set_correction(self, analysis_id: str, detection: dict[str, Any], label: str, note: str | None,
+                       image: dict[str, int] | None = None, crop_padding: float | None = None) -> dict[str, Any] | None:
+        """Insert or replace the correction of one detection (the canonical detection dict of the result).
+
+        `image` ({width, height}) and `crop_padding` describe the analysis, so the export can check that it
+        crops the same image the same way. Returns None (nothing written) if the analysis no longer exists:
+        the existence check and the write are one statement, so a concurrent delete leaves no orphan.
+        """
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        image = image or {}
+        with closing(self._connect()) as con, con:
+            n = con.execute(
+                """INSERT INTO corrections (analysis_id, detection_id, predicted_label, predicted_status, prob,
+                                            corrected_label, note, box_json, created_at, updated_at,
+                                            image_width, image_height, crop_padding)
+                   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                   WHERE EXISTS (SELECT 1 FROM analyses WHERE analysis_id = ?)
+                   ON CONFLICT (analysis_id, detection_id) DO UPDATE SET
+                       corrected_label = excluded.corrected_label, note = excluded.note, updated_at = excluded.updated_at""",
+                (analysis_id, detection["id"], detection["label"], detection["status"], detection.get("prob"), label,
+                 note or None, json.dumps(detection["box"]), now, now, image.get("width"), image.get("height"),
+                 crop_padding, analysis_id)).rowcount
+        if not n:
+            return None
+        return next(c for c in self.corrections(analysis_id) if c["detection_id"] == detection["id"])
+
+    def delete_correction(self, analysis_id: str, detection_id: int) -> bool:
+        with closing(self._connect()) as con, con:
+            n = con.execute("DELETE FROM corrections WHERE analysis_id = ? AND detection_id = ?",
+                            (analysis_id, detection_id)).rowcount
+        return n > 0
+
+    def corrections(self, analysis_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as con:
+            rows = con.execute("SELECT * FROM corrections WHERE analysis_id = ? ORDER BY detection_id",
+                               (analysis_id,)).fetchall()
+        return [self._correction(r) for r in rows]
+
+    def all_corrections(self) -> list[dict[str, Any]]:
+        """Every correction joined with its analysis (filename, stored files, source path, classifier run)."""
+        with closing(self._connect()) as con:
+            rows = con.execute(
+                """SELECT c.*, a.filename, a.source_path, a.files_json, a.classifier_run, a.output_dir
+                   FROM corrections c JOIN analyses a ON a.analysis_id = c.analysis_id
+                   ORDER BY c.analysis_id, c.detection_id""").fetchall()   # grouped: the export decodes each image once
+        out = []
+        for r in rows:
+            d = self._correction(r)
+            d["files"] = json.loads(d.pop("files_json")) if d.get("files_json") else {}
+            out.append(d)
+        return out

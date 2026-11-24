@@ -124,6 +124,15 @@ uncertainty:
   # 0.97 (set for the from-scratch model, base val acc 0.952 -> t=0.59) became degenerate for the ImageNet
   # model (base val acc 0.982 -> t=0.00, nothing ever flagged). Raised to 0.99 on VAL before any test use.
   target_accepted_accuracy: 0.99
+  # Threshold sensitivity shown with every result: confirmed counts if the threshold moved by +-this much.
+  # v2 sits near a confidence ceiling (label smoothing 0.1 over 8 classes caps confident softmax near 0.91).
+  sensitivity_delta: 0.01
+  borderline_warn_fraction: 0.2      # warn when >20% of detections lie within +-delta of the threshold
+
+confidence:
+  # scripts/fit_confidence.py (VAL only for every choice): temperature scaling + Mahalanobis unknown flag.
+  ood_known_quantile: 0.95           # cut-off = this quantile of KNOWN VAL crop scores (about 5% of knowns flagged)
+  temperature_folds_seed: 7          # 2-fold split of VAL to report out-of-fold calibration error
 
 synthetic:
   image_size: 640

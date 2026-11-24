@@ -140,3 +140,82 @@ One line per decision. Added to as each phase is built.
 - **Terrazzo theme (Hallmark deal): ruled specification tables, mono codes, one rust signal:** a lab tool reads like a specimen catalogue; colour is kept for state and focus, never decoration.
 - **Fonts bundled from npm (@fontsource), not loaded from a CDN:** the app works offline in a lab or at a viva.
 - **The earlier prototype UI and its packages were removed:** one frontend to maintain; its reusable parts (analyse once per upload, failures in the history, the history folder override, example frames) moved into the API.
+
+## Count intervals and concentration (2026-11-22)
+- **Two uncertainties, kept apart:** which class each detection is (classification) and how far one image's
+  volume represents the sample (sampling). They have different causes, so they get different intervals and are
+  never added together.
+- **Classification range = Poisson-binomial over the classifier probabilities:** each detection is class c with
+  its probability, independently; the exact distribution of the sum gives the 2.5% and 97.5% quantiles. Exact by
+  dynamic programming (O(n^2), trivial for a frame); no normal approximation, which fails at small counts.
+- **Coverage measured on VAL, not assumed:** 99.7% of (frame, class) pairs inside the nominal 95% range on 300
+  synthetic VAL frames. It is conservative, partly because the classifier keeps about 0.014 on every class.
+  Test frames were not used.
+- **Concentration uses the exact Garwood Poisson interval:** the standard counting-chamber statistic, valid at 0
+  (an upper bound of 3.69 organisms per volume) where +-2 sqrt(n) breaks down.
+- **Concentration from confirmed counts, not estimated:** confirmed counts are the conservative, primary output;
+  the estimated counts and their range stay visible next to them.
+- **Calibration as imaged volume, or pixel size times field depth, plus a concentration factor:** these match
+  how a lab knows its setup (counting-chamber volume, or a calibrated micrometre scale and a chamber depth). Giving
+  both forms is refused, so the volume is never ambiguous.
+- **Warning below 10 confirmed organisms and pooling in the CLI:** one image rarely holds enough organisms for a
+  usable interval. Summing counts and volumes over the images of one sample is the correct way to narrow it, and
+  that is a folder run.
+- **Old saved results still render:** the reports and the web app check whether intervals exist, so analyses
+  stored before this change keep working.
+
+## Calibrated confidence, unknown flag, threshold sensitivity (2026-11-22)
+- **Diagnosed the cliff before fixing it:** label smoothing 0.1 over 8 classes makes the training target for the
+  true class 0.9125, so confident softmax piles up just above 0.9 and the 0.89 threshold is on that pile (13.4% of
+  VAL crops within +-0.01).
+- **Temperature scaling (T = 0.69 on VAL) makes probabilities honest, not the threshold stable:** ECE 0.084 to
+  0.006 out of fold. It barely changes the order of the scores, so the crowding remains; the same rule on
+  calibrated scores agrees with the current one on 97.5% of VAL crops. Claiming it fixed the fragility would be
+  false.
+- **The deployed status rule is unchanged:** all reported test numbers describe it, and test data is not touched
+  again. Calibrated probabilities are reported next to it and used for the count ranges.
+- **Calibrated count ranges adopted by a rule set before the check:** keep them if VAL end-to-end coverage stays
+  at or above 95%. It was 96.7%, with a width of 0.58 against 1.65 for raw probabilities.
+- **Threshold sensitivity shown, not hidden:** each result reports confirmed counts at -0.01 and +0.01 and the
+  number of borderline detections, with a warning above 20%. The user sees when a count depends on the exact
+  threshold.
+- **Unknown flag = Mahalanobis distance on the penultimate features:** class means from TRAIN, one shared
+  covariance with Ledoit-Wolf shrinkage (1,280 features, so the plain estimate would be unstable). It needs no
+  retraining and no unknown examples.
+- **Cut-off from known VAL crops only (95th percentile):** the open-set crops were already an evaluation set, so
+  they were scored once, after every choice was fixed.
+- **The flag never changes a count:** it is information for the user. Removing flagged items from the counts
+  would drop 0.5% of confirmed known organisms on VAL, and that trade-off was never evaluated on test.
+- **Reported the weak result as it is:** silently counted unknowns go only from 6.1% to 5.3%; most unknowns that
+  get through look like a trained class in feature space as well.
+- **One forward pass for features and logits:** the head is split from the backbone, and the logits were checked
+  equal to the old path (0 argmax changes on 4,066 VAL crops), so no result moved.
+
+## Label corrections and INT8 (2026-11-22)
+- **Corrections are stored beside the result, never in it:** the model's counts, reports and report.json stay what
+  the model produced; reviewed counts are shown next to them. An evaluation can always tell model output from
+  human judgement.
+- **Four kinds of verdict:** a trained class, debris (reject), other organism (an open-set example for later) and
+  not an object (a detector false positive). These are the cases a retraining set needs, and the data a person
+  can actually give.
+- **One correction per detection, replaced on change:** the latest judgement counts; created_at is kept.
+- **Snapshot of the detection in the correction row:** predicted label, status, probability, box, image size and
+  crop padding. The export is self-describing and does not depend on today's config.
+- **Export checks the image is the same:** a CLI source file replaced after the analysis has a different size
+  and is skipped, never cropped under old labels. A same-size replacement would not be caught; storing a hash at
+  analysis time would close that gap.
+- **No orphans:** the existence check and the insert are one SQL statement, so a concurrent delete cannot leave a
+  correction without its analysis.
+- **Overlapping saves in the browser:** each answer carries the whole view, and only the answer to the latest
+  request is applied. A late answer cannot undo a newer correction on screen.
+- **Deleting an analysis deletes its corrections, and the confirmation says so:** the user chose deletion; the
+  export exists to keep corrections first.
+- **Nothing goes into the training data automatically:** the export is a folder to review. Mixing unreviewed
+  labels, or images from the test period, into training would leak or poison the evaluation.
+- **INT8 tried with the tools allowed (PyTorch FX, oneDNN), measured, and rejected on numbers:**
+  - the classifier is 3x smaller, but 3.3x slower on 1 thread and loses 0.136 VAL macro F1;
+  - the detector cannot be traced by torch.fx.
+  - The rule was written after the first measurement; that is stated, and the result fails it by a wide margin.
+- **The real INT8 route is onnxruntime (static QDQ) on the target board:** it needs a package that is not
+  installed and was not installed without permission. EfficientNet may need quantization-aware training, which
+  is retraining.

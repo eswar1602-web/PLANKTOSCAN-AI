@@ -15,6 +15,7 @@ opencv-python>=4.10
 numpy>=1.26
 pillow>=10.0
 scikit-learn>=1.4       # metrics, stratified/grouped splits
+scipy>=1.11             # exact Poisson intervals (src/pipeline/statistics.py); already a scikit-learn dependency
 imagehash>=4.3          # near-duplicate detection for leakage-safe splits
 
 # Data handling / config / logging

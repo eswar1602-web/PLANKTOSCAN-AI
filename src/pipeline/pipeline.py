@@ -13,15 +13,37 @@ import torch
 from src.classify.data import prepare_crop
 from src.classify.frame_crops import pad_crop
 from src.classify.model import load_checkpoint
-from src.classify.train import predict_logits
+from src.classify.augment import normalize, to_float
 from src.common.config import resolve_path
 from src.common.timing import stage
 from src.common.seed import get_device
 from src.detect.yolo_utils import ultralytics_offline
+from src.pipeline.confidence import ConfidenceModel
 from src.pipeline.counting import ORGANISM, REJECT, UNCERTAIN, Detection, assign_status
 from src.preprocess.enhance import preprocess
 
 STATUS_COLORS = {ORGANISM: (42, 120, 214), UNCERTAIN: (235, 104, 52), REJECT: (150, 150, 150)}  # RGB
+
+
+@torch.no_grad()
+def predict_logits_features(model, x_u8: np.ndarray, device: str, batch: int = 256,
+                            amp: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """(logits, penultimate features) for a uint8 (N, H, W, 3) array: one forward pass, split before the head.
+
+    forward_head(pre_logits=True) is the pooled feature vector of the timm model; the classifier layer on it
+    gives the same logits as model(x) (checked in scripts/fit_confidence.py).
+    """
+
+    model.eval()
+    logits, feats = [], []
+    for i in range(0, len(x_u8), batch):
+        xb = normalize(to_float(torch.from_numpy(x_u8[i:i + batch]).to(device)))
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp and device == "cuda"):
+            f = model.forward_head(model.forward_features(xb), pre_logits=True)
+            z = model.get_classifier()(f)
+        logits.append(z.float().cpu())
+        feats.append(f.float().cpu())
+    return torch.cat(logits).numpy(), torch.cat(feats).numpy()
 
 
 def load_thresholds(cfg: dict[str, Any]) -> dict[str, float]:
@@ -48,6 +70,18 @@ class Pipeline:
         self.det_conf = th.get("det_conf", 0.25)
         self.nms_iou = th.get("nms_iou", 0.6)
         self.uncertainty = th.get("uncertainty_threshold", 0.5)
+        self.confidence, self.confidence_warning = self._load_confidence(models / "confidence.npz")
+
+    def _load_confidence(self, path: Path) -> tuple[ConfidenceModel | None, str | None]:
+        """Calibration and unknown-flag statistics fitted for THIS classifier (scripts/fit_confidence.py), if present."""
+        if not path.is_file():
+            return None, ("No confidence calibration (models/confidence.npz): calibrated probabilities and the "
+                          "unknown flag are off.")
+        cm = ConfidenceModel.load(path)
+        if cm.classifier_run != self.meta.get("run"):
+            return None, (f"models/confidence.npz was fitted for classifier run {cm.classifier_run}, not "
+                          f"{self.meta.get('run')}: calibrated probabilities and the unknown flag are off.")
+        return cm, None
 
     def detect(self, img: np.ndarray, det_conf: float) -> tuple[np.ndarray, np.ndarray]:
         """Boxes (N, 4) x0 y0 x1 y1 and confidences (N,) from the YOLO detector."""
@@ -62,18 +96,22 @@ class Pipeline:
         pad = self.cfg["pipeline"]["crop_padding"]
         return [pad_crop(img, b, pad) for b in boxes]
 
-    def classify(self, crops: list[np.ndarray]) -> np.ndarray:
-        """Softmax probabilities (N, n_classes); the same prepare_crop as in training."""
+    def classify_full(self, crops: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+        """(logits (N, n_classes), features (N, D)); the same prepare_crop as in training."""
         if not crops:
-            return np.zeros((0, len(self.classes)))
+            return np.zeros((0, len(self.classes))), np.zeros((0, self.classifier.num_features))
         x = np.stack([prepare_crop(c, self.meta["image_size"], self.meta["preprocess"], self.meta.get("grayscale", False)) for c in crops])
         bs = int(self.cfg["pipeline"].get("classifier_batch", 0))
         if bs > 0:   # fixed batch shape: cuDNN sets up each NEW input shape once (6-12 s on the RTX 3050),
             n = len(x)   # and the number of detections changes per image. Eval mode: padding never affects real crops.
             x = np.concatenate([x, np.zeros((-n % bs,) + x.shape[1:], x.dtype)])
-            logits = predict_logits(self.classifier, x, self.device, batch=bs)[:n]
-        else:
-            logits = predict_logits(self.classifier, x, self.device)
+            logits, feats = predict_logits_features(self.classifier, x, self.device, batch=bs)
+            return logits[:n], feats[:n]
+        return predict_logits_features(self.classifier, x, self.device)
+
+    def classify(self, crops: list[np.ndarray]) -> np.ndarray:
+        """Softmax probabilities (N, n_classes)."""
+        logits, _ = self.classify_full(crops)
         return torch.softmax(torch.from_numpy(logits), 1).numpy()
 
     def run(self, img: np.ndarray, det_conf: float | None = None, uncertainty: float | None = None,
@@ -87,14 +125,22 @@ class Pipeline:
                              for b in boxes], dtype=bool)
             boxes, confs = boxes[keep], confs[keep]
         with stage(timings, "classification", self.device):     # crop + crop preprocessing + classifier
-            probs = self.classify(self.crops(img, boxes))
+            logits, feats = self.classify_full(self.crops(img, boxes))
+            probs = torch.softmax(torch.from_numpy(logits), 1).numpy()
+            if self.confidence is not None:
+                cal, scores, unknown = self.confidence.apply(logits, feats)
         dets = []
-        for b, c, p in zip(boxes, confs, probs):
+        for i, (b, c, p) in enumerate(zip(boxes, confs, probs)):
             k = int(p.argmax())
             label = self.classes[k]
-            dets.append(Detection(box=tuple(float(v) for v in b), det_conf=float(c), label=label, prob=float(p[k]),
-                                  status=assign_status(label, float(p[k]), uncertainty, self.reject),
-                                  probs={cl: float(v) for cl, v in zip(self.classes, p)}))
+            d = Detection(box=tuple(float(v) for v in b), det_conf=float(c), label=label, prob=float(p[k]),
+                          status=assign_status(label, float(p[k]), uncertainty, self.reject),
+                          probs={cl: float(v) for cl, v in zip(self.classes, p)})
+            if self.confidence is not None:     # status still comes from the raw probability (the VAL-chosen rule)
+                d.calibrated_prob = float(cal[i, k])
+                d.calibrated_probs = {cl: float(v) for cl, v in zip(self.classes, cal[i])}
+                d.ood_score, d.unknown = float(scores[i]), bool(unknown[i])
+            dets.append(d)
         return dets
 
 

@@ -51,3 +51,41 @@ export function countRows(result) {
     detections: c.total_detections,
   };
 }
+
+// Sample calibration: the server's rule, checked before upload. Empty strings mean "not given".
+// Returns null when the calibration is valid or entirely empty, else the problem in words.
+export function calibrationError({ volumeMl = '', pixelUm = '', depthUm = '', factor = '' } = {}) {
+  const given = { volumeMl, pixelUm, depthUm, factor };
+  const has = (k) => given[k] !== '' && given[k] !== null && given[k] !== undefined;
+  const filled = Object.keys(given).filter(has);
+  if (filled.length === 0) return null;
+  for (const k of filled) {
+    const n = Number(given[k]);
+    if (!Number.isFinite(n) || n <= 0) return 'Calibration values are positive numbers.';
+  }
+  if (has('volumeMl') && (has('pixelUm') || has('depthUm'))) return 'Give the imaged volume, or pixel size and depth, not both.';
+  if (!has('volumeMl') && !(has('pixelUm') && has('depthUm'))) return 'Give the imaged volume, or both pixel size and depth.';
+  return null;
+}
+
+// Three significant figures, never scientific notation, for the values a lab reads.
+export function rate(x) {
+  if (x === null || x === undefined || !Number.isFinite(x)) return '';
+  if (x === 0) return '0';
+  const digits = Math.max(0, 2 - Math.floor(Math.log10(Math.abs(x))));
+  return Number(x.toFixed(Math.min(digits, 8))).toLocaleString('en', { maximumFractionDigits: 8 });
+}
+
+// The 95% count range of one class ("0 to 2"), or '' for results saved before intervals existed.
+export function countRange(result, key) {
+  const v = result.count_intervals?.per_class?.[key];
+  if (!v) return '';
+  return v.low === v.high ? String(v.low) : `${v.low} to ${v.high}`;
+}
+
+// Long camera file names shortened in the middle, keeping the start and the extension ("SPC-EAWAG-0P5…-112.jpeg").
+export function shortName(name, max = 28) {
+  if (!name || name.length <= max) return name ?? '';
+  const keepEnd = Math.min(12, Math.floor(max / 2));
+  return `${name.slice(0, max - keepEnd - 1)}…${name.slice(-keepEnd)}`;
+}
