@@ -227,8 +227,22 @@ in the history. Zero detections is a normal 201 result with the warning "No orga
 
 ## Deployment
 
-The online demo runs on Hugging Face Spaces (Docker SDK, free CPU hardware). One container runs the FastAPI server,
-which also serves the built React app, so the whole app has a single URL. The files are in `deploy/huggingface/`.
+The FastAPI server also serves the built React app, so the whole app has a single URL. Two ways to put it online:
+
+**A. Public link from your own PC (free, no account).** A Cloudflare quick tunnel exposes the local server:
+
+```
+winget install --id Cloudflare.cloudflared      # once; reopen the terminal afterwards
+powershell -ExecutionPolicy Bypass -File deploy\share_online.ps1
+```
+
+The script starts the server, waits for the models, and prints a `https://....trycloudflare.com` link. The link works
+only while that window is open and the PC is on, awake and online, and it changes on every run. Anyone with the link can
+use the app and its API (upload, delete history), so do not post it publicly. This uses the PC's GPU if there is one.
+
+**B. Hugging Face Spaces (Docker SDK, always on).** Docker Spaces on CPU now need a Hugging Face PRO subscription
+(creating one on a free account returns `402 Payment Required`), so this was prepared and tested locally on CPU but
+not published. The files are in `deploy/huggingface/`.
 
 ```
 cd frontend && npm run build && cd ..
