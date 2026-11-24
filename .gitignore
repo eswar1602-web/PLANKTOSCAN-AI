@@ -67,3 +67,6 @@ frontend/dist/
 # Hallmark tool logs
 .hallmark/
 frontend/.hallmark/
+
+# Assembled Hugging Face Space folder (contains model weights)
+deploy/huggingface/space/

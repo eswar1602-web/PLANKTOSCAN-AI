@@ -1,0 +1,20 @@
+# Runtime packages for the Hugging Face Space, pinned to requirements-lock.txt.
+# torch / torchvision are installed by the Dockerfile from the CPU index.
+ultralytics==8.4.210
+timm==1.0.31
+opencv-python==5.0.0.93
+numpy==2.5.4
+pillow==13.0.0
+scipy==1.18.1
+scikit-learn==1.9.1
+imagehash==4.3.2
+pandas==3.1.1
+pyyaml==6.0.3
+tqdm==4.70.1
+matplotlib==3.11.2
+fastapi==0.165.0
+uvicorn==0.54.0
+python-multipart==0.0.33
+reportlab==5.1.0
+jinja2==3.1.6
+tabulate==0.10.0

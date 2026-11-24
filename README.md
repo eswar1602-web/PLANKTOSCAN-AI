@@ -225,6 +225,27 @@ Error codes and statuses: `invalid_image` 400, `unsupported_format` 415, `image_
 `export_error` 500, `model_load_error` 503. A failed analysis is also stored
 in the history. Zero detections is a normal 201 result with the warning "No organisms detected."
 
+## Deployment
+
+The online demo runs on Hugging Face Spaces (Docker SDK, free CPU hardware). One container runs the FastAPI server,
+which also serves the built React app, so the whole app has a single URL. The files are in `deploy/huggingface/`.
+
+```
+cd frontend && npm run build && cd ..
+python deploy/huggingface/build_space.py      # -> deploy/huggingface/space/ (git-ignored: holds the weights)
+hf auth login                                 # once, with a write token
+hf repos create <user>/planktoscan-ai --repo-type space --space-sdk docker   # once
+hf upload <user>/planktoscan-ai deploy/huggingface/space . --repo-type space
+```
+
+`build_space.py` copies only what the running app needs: `api/`, `src/`, `config.yaml`, `results/thresholds.json`,
+the built frontend, `models/{detector_best,classifier_best}.pt` and `models/confidence.npz` (it checks both `.pt`
+files against `results/model_manifest.json`), and the first 6 synthetic VAL frames as examples (`--no-examples`
+leaves them out). The image installs CPU-only PyTorch and the versions from `requirements-lock.txt`.
+
+On the demo, the history is shared by every visitor and stored in `/tmp`, so it is lost when the Space restarts.
+A free Space sleeps after a period without visitors, and the first visit after that waits for it to start again.
+
 ## Command-line usage
 
 ```powershell
